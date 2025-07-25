@@ -5,6 +5,10 @@ import logging
 from typing import List, Tuple, Optional, Dict, Any
 
 # Налаштування логування
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -13,40 +17,37 @@ class SNMPToolsChecker:
 
     # Константи для конфігурації
     TIMEOUT = 5
-    CHECK_COMMANDS = [
-        (
-            ["snmpget", "--version"],
-            "SNMP-інструменти встановлені (перевірка snmpget)",
-        ),
-        (
-            ["snmpwalk", "-V"],
-            "SNMP-інструменти встановлені (перевірка snmpwalk)",
-        ),
-    ]
 
     @classmethod
     def is_installed(cls) -> bool:
-        """Перевіряє, чи встановлені SNMP-інструменти в системі"""
-        for command, success_message in cls.CHECK_COMMANDS:
-            try:
-                subprocess.run(
-                    command,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=True,
-                    timeout=cls.TIMEOUT,
-                )
-                logger.info(success_message)
-                return True
-            except (
-                subprocess.CalledProcessError,
-                FileNotFoundError,
-                subprocess.TimeoutExpired,
-            ):
-                continue
+        """
+        Перевіряє, чи встановлені ВСІ необхідні SNMP-інструменти в системі.
+        Повертає True, лише якщо всі інструменти доступні.
+        """
 
-        cls._log_installation_instructions()
-        return False
+        try:
+            # Перевіряємо кожну команду, передаючи її назву
+            subprocess.run(
+                ["snmpwalk", "-V"],  # "-V" для перевірки версії
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True,
+                timeout=cls.TIMEOUT,
+            )
+        except (
+            FileNotFoundError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+        ) as e:
+            # Якщо команда не знайдена або виконується з помилкою,
+            # логуємо це та одразу повертаємо False.
+            logger.error(f"Помилка перевірки інструмента SNMP: {e}")
+            cls._log_installation_instructions()
+            return False
+
+        # Якщо цикл завершився без помилок, значить всі інструменти на місці.
+        logger.debug("Усі необхідні SNMP-інструменти успішно знайдені.")
+        return True
 
     @staticmethod
     def _log_installation_instructions():
@@ -54,7 +55,7 @@ class SNMPToolsChecker:
         os_name = platform.system()
 
         instructions = {
-            "Linux": "sudo apt-get install snmp snmp-mibs-downloader",
+            "Debian/Ubuntu": "sudo apt-get install snmp snmp-mibs-downloader",
             "Darwin": "brew install net-snmp",
             "Windows": "Завантажте з https://www.net-snmp.org/download.html",
         }
@@ -73,6 +74,7 @@ class SwitchSNMP:
 
     # Константи OID для статистики інтерфейсів
     OID_IF_INDEX = "1.3.6.1.2.1.2.2.1.1"  # ifIndex
+    OID_IF_SPEED = "1.3.6.1.2.1.2.2.1.5"  # ifSpeed
     OID_IF_DESCR = "1.3.6.1.2.1.2.2.1.2"  # ifDescr
     OID_IF_IN_OCTETS = "1.3.6.1.2.1.2.2.1.10"  # ifInOctets
     OID_IF_OUT_OCTETS = "1.3.6.1.2.1.2.2.1.16"  # ifOutOctets
@@ -80,17 +82,8 @@ class SwitchSNMP:
     OID_IF_OUT_PKTS = "1.3.6.1.2.1.2.2.1.17"  # ifOutUcastPkts
     OID_IF_STATUS = "1.3.6.1.2.1.2.2.1.8"  # ifOperStatus
     OID_IF_ALIAS = "1.3.6.1.2.1.31.1.1.1.18"  # ifAlias
-
-    # Статуси інтерфейсів
-    INTERFACE_STATUSES = {
-        1: "up",
-        2: "down",
-        3: "testing",
-        4: "unknown",
-        5: "dormant",
-        6: "notPresent",
-        7: "lowerLayerDown",
-    }
+    OID_IF_IN_ERRORS = "1.3.6.1.2.1.2.2.1.14"  # ifInErrors
+    OID_IF_OUT_ERRORS = "1.3.6.1.2.1.2.2.1.20"  # ifOutErrors
 
     def __init__(self, host: str, community: str, version: str):
         self.host = host
@@ -115,28 +108,59 @@ class SwitchSNMP:
         try:
             # Отримуємо індекси інтерфейсів
             if_indexes = self._get_interface_indexes()
+            if not if_indexes:
+                logger.warning("Не знайдено жодного інтерфейсу")
+                return {}
 
-            # Збираємо дані для кожного інтерфейсу
+            # Список всіх OID для збору даних
+            target_oids = [
+                self.OID_IF_DESCR,
+                self.OID_IF_ALIAS,
+                self.OID_IF_SPEED,
+                self.OID_IF_IN_OCTETS,
+                self.OID_IF_OUT_OCTETS,
+                self.OID_IF_IN_PKTS,
+                self.OID_IF_OUT_PKTS,
+                self.OID_IF_IN_ERRORS,
+                self.OID_IF_OUT_ERRORS,
+                self.OID_IF_STATUS,
+            ]
+
+            # Збираємо всі дані за один прохід
+            oid_data = {}
+            for oid in target_oids:
+                oid_data[oid] = self._snmp_walk(oid)
+
+            # Формуємо результат для кожного інтерфейсу
             interfaces = {}
             for index in if_indexes:
                 interfaces[index] = {
-                    "name": self._snmp_get(self.OID_IF_DESCR + f".{index}"),
-                    "alias": self._snmp_get(self.OID_IF_ALIAS + f".{index}"),
-                    "in_octets": int(
-                        self._snmp_get(self.OID_IF_IN_OCTETS + f".{index}")
-                        or 0
+                    "name": oid_data[self.OID_IF_DESCR].get(index, ""),
+                    "alias": oid_data[self.OID_IF_ALIAS].get(index, ""),
+                    "speed": self._safe_int(
+                        oid_data[self.OID_IF_SPEED].get(index, "")
                     ),
-                    "out_octets": int(
-                        self._snmp_get(self.OID_IF_OUT_OCTETS + f".{index}")
-                        or 0
+                    "in_octets": self._safe_int(
+                        oid_data[self.OID_IF_IN_OCTETS].get(index)
                     ),
-                    "in_pkts": int(
-                        self._snmp_get(self.OID_IF_IN_PKTS + f".{index}") or 0
+                    "out_octets": self._safe_int(
+                        oid_data[self.OID_IF_OUT_OCTETS].get(index)
                     ),
-                    "out_pkts": int(
-                        self._snmp_get(self.OID_IF_OUT_PKTS + f".{index}") or 0
+                    "in_pkts": self._safe_int(
+                        oid_data[self.OID_IF_IN_PKTS].get(index)
                     ),
-                    "status": self._get_interface_status(index),
+                    "out_pkts": self._safe_int(
+                        oid_data[self.OID_IF_OUT_PKTS].get(index)
+                    ),
+                    "in_errors": self._safe_int(
+                        oid_data[self.OID_IF_IN_ERRORS].get(index)
+                    ),
+                    "out_errors": self._safe_int(
+                        oid_data[self.OID_IF_OUT_ERRORS].get(index)
+                    ),
+                    "status": oid_data[self.OID_IF_STATUS].get(
+                        index, "unknown"
+                    ),
                 }
 
             logger.info(
@@ -146,68 +170,23 @@ class SwitchSNMP:
 
         except Exception as e:
             logger.error(
-                f"Помилка при отриманні статистики: {e}", exc_info=True
+                f"Критична помилка при отриманні статистики: {e}",
+                exc_info=True,
             )
             return {}
 
     def _get_interface_indexes(self) -> List[int]:
         """Отримує список індексів активних інтерфейсів"""
-        # Використовуємо OID ifIndex (1.3.6.1.2.1.2.2.1.1) або ifDescr для отримання індексів
-        output = self._snmp_walk(self.OID_IF_INDEX)
-        return [index for index in output if 1 <= index <= 99]
+        indexes = self._snmp_walk(self.OID_IF_INDEX)
+        return [idx for idx in indexes.keys() if 1 <= idx <= 99]
 
-    def _get_interface_status(self, index: int) -> str:
-        """Отримує статус інтерфейсу у читабельному форматі"""
-        status_code = self._snmp_get(self.OID_IF_STATUS + f".{index}")
+    @staticmethod
+    def _safe_int(value: Optional[str]) -> int:
+        """Безпечне перетворення в ціле число"""
         try:
-            return self.INTERFACE_STATUSES.get(int(status_code), "unknown")
+            return int(value) if value else 0
         except (ValueError, TypeError):
-            return "unknown"
-
-    def _snmp_get(self, oid: str) -> str:
-        """
-        Виконує SNMP get для вказаного OID і повертає значення
-
-        Args:
-            oid: OID для запиту
-
-        Returns:
-            Рядок зі значенням або пустий рядок у разі помилки
-        """
-        try:
-            command = [
-                "snmpget",
-                "-v",
-                self.version,
-                "-c",
-                self.community,
-                "-Oqv",  # Тільки значення, без OID та типу
-                self.host,
-                oid,
-            ]
-
-            result = subprocess.run(
-                command, capture_output=True, text=True, check=True, timeout=5
-            )
-
-            # Обрізаємо зайві пробіли та видаляємо лапки
-            value = result.stdout.strip()
-            print(value)
-            if value.startswith('"') and value.endswith('"'):
-                value = value[1:-1]
-            return value
-
-        except subprocess.CalledProcessError as e:
-            logger.error(
-                f"SNMP помилка (код {e.returncode}): {e.stderr.strip()}"
-            )
-            return ""
-        except subprocess.TimeoutExpired:
-            logger.error(f"Таймаут виконання SNMP запиту для OID {oid}")
-            return ""
-        except Exception as e:
-            logger.error(f"Невідома помилка при виконанні SNMP: {e}")
-            return ""
+            return 0
 
     def _snmp_walk(self, base_oid: str) -> Dict[int, str]:
         """
@@ -233,7 +212,11 @@ class SwitchSNMP:
             ]
 
             result = subprocess.run(
-                command, capture_output=True, text=True, check=True, timeout=10
+                command,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=10,
             )
             return self._parse_snmp_walk_output(result.stdout)
 
@@ -252,52 +235,35 @@ class SwitchSNMP:
     @staticmethod
     def _parse_snmp_walk_output(output: str) -> Dict[int, str]:
         """Парсить вивід SNMP walk у словник {index: value}"""
-
         results = {}
+        pattern = r"\.(\d+)\s*=\s*(.*?)$"
 
         for line in output.splitlines():
             line = line.strip()
             if not line:
                 continue
 
-            # Розділяємо ліву частину (OID+індекс) і значення
-            if "=" not in line:
+            # Шукаємо останню цифрову групу в OID
+            match = re.search(pattern, line)
+            if not match:
                 continue
 
-            oid_part, value_part = line.split("=", 1)
-            oid_part = oid_part.strip()
-            value_part = value_part.strip()
+            index = int(match.group(1))
+            value = match.group(2).strip()
 
             # Видаляємо лапки зі значення якщо вони є
-            if value_part.startswith('"') and value_part.endswith('"'):
-                value_part = value_part[1:-1]
+            if value.startswith('"') and value.endswith('"'):
+                value = value[1:-1]
 
-            # Спроба знайти числовий індекс
-            index = None
-            if "." in oid_part:
-                # Розділяємо OID на частини, щоб знайти числовий OID (наприклад, ".1.3.6.1.2.1.2.2.1.1.1")
-                parts = oid_part.split(".")
-                try:
-                    # Останній елемент має бути індексом
-                    index = int(parts[-1])
-                except ValueError:
-                    pass
+            results[index] = value
 
-            if index is not None:
-                results[index] = value_part
-            else:
-                logger.info(
-                    "Не вдалося визначити індекс для рядка: %s", line
-                )
         return results
-
-    # Наприклад: get_system_info(), get_interfaces_stats(), тощо
 
 
 if __name__ == "__main__":
 
     ZYXEL_CONFIG = {
-        "host": "172.24.129.144",
+        "host": "172.24.72.90",
         "community": "public",
         "version": "2c",
     }
@@ -305,8 +271,16 @@ if __name__ == "__main__":
     switch = SwitchSNMP(**ZYXEL_CONFIG)
 
     if switch.is_snmp_available:
-        print("SNMP доступний")
         # Виклик методів для роботи з комутатором
-        print(switch.get_interfaces_stats())
+        stats = switch.get_interfaces_stats()
+        for idx, data in stats.items():
+            print(f"Інтерфейс {idx}:")
+            print(f"  Ім'я: {data['name']}")
+            print(f"  Alias: {data['alias']}")
+            print(f"  Вхідні байти: {data['in_octets']}")
+            print(f"  Вихідні байти: {data['out_octets']}")
+            print(f"  Помилки: {data['in_errors']} / {data['out_errors']}")
+            print(f"  Статус: {data['status']}")
+            print("-" * 40)
     else:
         print("SNMP недоступний - виконайте інструкції з логів")
