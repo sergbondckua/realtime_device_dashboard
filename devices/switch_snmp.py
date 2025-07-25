@@ -1,8 +1,8 @@
+import logging
 import re
 import subprocess
 import platform
-import logging
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Optional, Dict, Any
 
 # Налаштування логування
 logging.basicConfig(
@@ -70,10 +70,22 @@ class SNMPToolsChecker:
 
 
 class SwitchSNMP:
-    """Клас для роботи з комутатором через SNMP"""
+    """Клас для роботи з комутатором через SNMP
+    Args:
+        host (str): IP-адреса комутатора
+        community (str): Community-строка для доступу до комутатора
+        version (str): Версія SNMP-протоколу (2c)
+    """
+
+    # Системні OID
+    OID_SYS_DESCR = "1.3.6.1.2.1.1.1.0"  # sysDescr (Модель, прошивка)
+    OID_SYS_NAME = "1.3.6.1.2.1.1.5.0"  # sysName (Системне ім'я)
+    OID_SYS_UPTIME = "1.3.6.1.2.1.1.3.0"  # sysUpTime (Uptime)
+    OID_SYS_MAC = "1.3.6.1.2.1.2.2.1.6"  # ifPhysAddress (базова MAC-адреса)
 
     # Константи OID для статистики інтерфейсів
     OID_IF_INDEX = "1.3.6.1.2.1.2.2.1.1"  # ifIndex
+    OID_IF_TYPE = "1.3.6.1.2.1.2.2.1.3"  # ifType
     OID_IF_SPEED = "1.3.6.1.2.1.2.2.1.5"  # ifSpeed
     OID_IF_DESCR = "1.3.6.1.2.1.2.2.1.2"  # ifDescr
     OID_IF_IN_OCTETS = "1.3.6.1.2.1.2.2.1.10"  # ifInOctets
@@ -81,15 +93,62 @@ class SwitchSNMP:
     OID_IF_IN_PKTS = "1.3.6.1.2.1.2.2.1.11"  # ifInUcastPkts
     OID_IF_OUT_PKTS = "1.3.6.1.2.1.2.2.1.17"  # ifOutUcastPkts
     OID_IF_STATUS = "1.3.6.1.2.1.2.2.1.8"  # ifOperStatus
+    OID_IF_ADMIN_STATUS = "1.3.6.1.2.1.2.2.1.7"  # ifAdminStatus
     OID_IF_ALIAS = "1.3.6.1.2.1.31.1.1.1.18"  # ifAlias
     OID_IF_IN_ERRORS = "1.3.6.1.2.1.2.2.1.14"  # ifInErrors
     OID_IF_OUT_ERRORS = "1.3.6.1.2.1.2.2.1.20"  # ifOutErrors
 
-    def __init__(self, host: str, community: str, version: str):
+    def __init__(
+        self, host: str, community: str = "public", version: str = "2c"
+    ):
         self.host = host
         self.community = community
         self.version = version
         self.is_snmp_available = SNMPToolsChecker.is_installed()
+
+    def get_system_info(self) -> Dict[str, Optional[str]]:
+        """
+        Отримує основну системну інформацію про пристрій.
+        """
+        if not self.is_snmp_available:
+            logger.error(
+                "Спроба отримати інформацію про систему при відсутніх SNMP інструментах"
+            )
+            return {}
+
+        info = {}
+        try:
+            # Отримання системної інформації
+            info["model"] = self._snmp_get(self.OID_SYS_DESCR)
+            info["system_name"] = self._snmp_get(self.OID_SYS_NAME)
+            info["uptime"] = self._snmp_get(self.OID_SYS_UPTIME)
+
+            # Отримання базової MAC-адреси
+            # Для цього потрібно пройтися по інтерфейсах і знайти один з базовим типом
+            if_types = self._snmp_walk(self.OID_IF_TYPE)
+            mac_address_found = False
+            for index, if_type in if_types.items():
+                # Зазвичай, MAC-адреса VLAN-інтерфейсу або першого фізичного
+                # є базовою. Тут ми беремо перший, що має MAC-адресу.
+                if if_type in ("6", "62", "117"):
+                    mac_oid = f"{self.OID_SYS_MAC}.{index}"
+                    mac_addr = self._snmp_get(mac_oid).strip()
+                    if mac_addr:
+                        info["mac_address"] = mac_addr.replace(" ", ":")
+                        mac_address_found = True
+                        break
+            if not mac_address_found:
+                info["mac_address"] = "00:00:00:00:00:00"
+
+        except Exception as e:
+            logger.error(
+                f"Критична помилка при отриманні системної інформації: {e}",
+                exc_info=True,
+            )
+            return {}
+
+        logger.info("Системна інформація успішно отримана.")
+        return info
 
     def get_interfaces_stats(self) -> Dict[int, Dict[str, Any]]:
         """
@@ -124,6 +183,7 @@ class SwitchSNMP:
                 self.OID_IF_IN_ERRORS,
                 self.OID_IF_OUT_ERRORS,
                 self.OID_IF_STATUS,
+                self.OID_IF_ADMIN_STATUS,
             ]
 
             # Збираємо всі дані за один прохід
@@ -158,8 +218,11 @@ class SwitchSNMP:
                     "out_errors": self._safe_int(
                         oid_data[self.OID_IF_OUT_ERRORS].get(index)
                     ),
-                    "status": oid_data[self.OID_IF_STATUS].get(
-                        index, "unknown"
+                    "admin_status": self._safe_int(
+                        oid_data[self.OID_IF_ADMIN_STATUS].get(index)
+                    ),
+                    "status": self._safe_int(
+                        oid_data[self.OID_IF_STATUS].get(index)
                     ),
                 }
 
@@ -176,9 +239,13 @@ class SwitchSNMP:
             return {}
 
     def _get_interface_indexes(self) -> List[int]:
-        """Отримує список індексів активних інтерфейсів"""
-        indexes = self._snmp_walk(self.OID_IF_INDEX)
-        return [idx for idx in indexes.keys() if 1 <= idx <= 99]
+        """Отримує список індексів фізичних інтерфейсів"""
+        indexes = self._snmp_walk(self.OID_IF_TYPE)
+        return [
+            index
+            for index, value in indexes.items()
+            if value in ("6", "62", "117") and index <= 48
+        ]
 
     @staticmethod
     def _safe_int(value: Optional[str]) -> int:
@@ -232,6 +299,52 @@ class SwitchSNMP:
             logger.error(f"Невідома помилка при виконанні SNMP walk: {e}")
             return {}
 
+    def _snmp_get(self, oid: str) -> Optional[str]:
+        """
+        Виконує SNMP get для вказаного OID і повертає значення.
+
+        Args:
+            oid: OID для запиту.
+
+        Returns:
+            Значення або None, якщо сталася помилка.
+        """
+        try:
+            command = [
+                "snmpget",
+                "-v",
+                self.version,
+                "-c",
+                self.community,
+                "-Oqv",  # Вивід лише значення
+                self.host,
+                oid,
+            ]
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=10,
+            )
+            value_raw = result.stdout.strip()
+            # Видаляємо лапки зі значення якщо вони є
+            if value_raw.startswith('"') and value_raw.endswith('"'):
+                value_raw = value_raw[1:-1]
+            return value_raw
+
+        except subprocess.CalledProcessError as e:
+            logger.warning(
+                f"Не вдалося отримати OID {oid}. Помилка: {e.stderr.strip()}"
+            )
+            return None
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Таймаут виконання SNMP get для OID {oid}")
+            return None
+        except Exception as e:
+            logger.warning(f"Невідома помилка при SNMP get для OID {oid}: {e}")
+            return None
+
     @staticmethod
     def _parse_snmp_walk_output(output: str) -> Dict[int, str]:
         """Парсить вивід SNMP walk у словник {index: value}"""
@@ -249,30 +362,33 @@ class SwitchSNMP:
                 continue
 
             index = int(match.group(1))
-            value = match.group(2).strip()
+            value_raw = match.group(2).strip()
 
             # Видаляємо лапки зі значення якщо вони є
-            if value.startswith('"') and value.endswith('"'):
-                value = value[1:-1]
+            if value_raw.startswith('"') and value_raw.endswith('"'):
+                value_raw = value_raw[1:-1]
 
-            results[index] = value
+            results[index] = value_raw
 
         return results
 
 
 if __name__ == "__main__":
 
-    ZYXEL_CONFIG = {
-        "host": "172.24.72.90",
-        "community": "public",
-        "version": "2c",
-    }
     # Ініціалізація комутатора
-    switch = SwitchSNMP(**ZYXEL_CONFIG)
+    switch = SwitchSNMP("172.16.127.147")
 
     if switch.is_snmp_available:
         # Виклик методів для роботи з комутатором
         stats = switch.get_interfaces_stats()
+
+        # Отримуємо та виводимо системну інформацію
+        system_info = switch.get_system_info()
+        print("--- Системна інформація ---")
+        for key, value in system_info.items():
+            print(f"{key}: {value}")
+        print("-" * 40)
+
         for idx, data in stats.items():
             print(f"Інтерфейс {idx}:")
             print(f"  Ім'я: {data['name']}")

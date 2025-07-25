@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Моніторинг мережевого обладнання</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='/network_monitor/css/style.css') }}">
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>🌐 Моніторинг мережевого обладнання</h1>
+    <div class="status-bar">
+      <div class="status-item">
+        <div class="status-indicator status-online" id="connectionStatus"></div>
+        <span id="connectionText">Підключення активне</span>
+      </div>
+      <div class="status-item">
+        <span>🕒 Останнє оновлення: <span id="lastUpdateTime">--:--:--</span></span>
+      </div>
+      <div class="status-item">
+        <span>🔄 Автооновлення: <span id="autoUpdateStatus">Увімкнено</span></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="system-info">
+    <h2>📊 Системна інформація обладнання</h2>
+    <div class="info-grid" id="systemInfo">
+      <div class="loading">
+        <div class="spinner"></div>
+        Завантаження системної інформації...
+      </div>
+    </div>
+  </div>
+
+  <div class="table_port">
+    <h2>🔌 Комутація портів</h2>
+    <div class="filters">
+      <button class="filter-btn active" onclick="filterPorts('all', event)">Всі</button>
+      <button class="filter-btn" onclick="filterPorts('active', event)">Активні</button>
+      <button class="filter-btn" onclick="filterPorts('inactive', event)">Неактивні</button>
+      <button class="filter-btn" onclick="filterPorts('connected', event)">Підключені</button>
+      <button class="filter-btn" onclick="filterPorts('errors', event)">З помилками</button>
+    </div>
+
+    <div class="desktop-only">
+      <div class="legend">
+        <div class="bold_text">#</div>
+        <div class="bold_text">Комутація порту</div>
+        <div class="bold_text">Порт</div>
+        <div class="bold_text">Лінк</div>
+        <div></div>
+        <div class="bold_text">Трафік</div>
+      </div>
+    </div>
+
+    <div id="portsContainer">
+      <div class="loading">
+        <div class="spinner"></div>
+        Завантаження портів...
+      </div>
+    </div>
+
+    <div class="last-update">
+      Дані оновлюються кожні 5 секунд
+    </div>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='/network_monitor/js/script.js') }}"></script>
+</body>
+</html>
