@@ -82,10 +82,10 @@ function renderPorts(interfaces) {
                     <span class="mobile-only mobile-label">Комутація</span>
                     ${!isConnected ?
             `<div class="add-connection">➕ Додати підключення</div>
-                         ${port.auto ? '<span class="label_backblack">AVTO</span>' : ''}` :
+                         ${port.alias ? '<span class="label_backblack">${port.alias}</span>' : ''}` :
             `<div class="client-name">${port.connection}</div>
                          ${port.address ? `<div class="address">${port.address}</div>` : ''}
-                         ${port.uplink ? '<span class="label_backblack">UPLINK</span>' : ''}
+                         ${port.alias ? '<span class="label_backblack">${port.alias}</span>' : ''}
                          ${port.descr ? `<div class="port-descr"><b>Port descr:</b> ${port.descr}</div>` : ''}`
         }
                     <div class="port-descr"><b>Name:</b> ${port.name || 'N/A'}</div>
@@ -214,7 +214,7 @@ async function fetchData() {
 
 function startAutoUpdate() {
     fetchData(); // Перший запуск одразу
-    updateInterval = setInterval(fetchData, 50000); // Оновлення кожні 30 секунд
+    updateInterval = setInterval(fetchData, 5000); // Оновлення кожні 30 секунд
 }
 
 function stopAutoUpdate() {

@@ -2,6 +2,8 @@ import logging
 import re
 import subprocess
 import platform
+from dataclasses import dataclass
+from enum import Enum
 from typing import List, Optional, Dict, Any
 
 # Налаштування логування
@@ -12,11 +14,56 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class InterfaceType(Enum):
+    """Типи інтерфейсів за RFC 1213"""
+
+    ETHERNET = "6"  # ethernetCsmacd
+    FAST_ETHERNET = "62"  # fastEther
+    GIGABIT_ETHERNET = "117"  # gigabitEthernet
+    OTHER = "1"  # other
+    PPPOE = "23"  # pppoe
+    WIRELESS = "71"  # wireless
+    SOFTWARE_LOOPBACK = "24"  # softwareLoopback
+
+
+class OSInstructions(Enum):
+    """Інструкції для встановлення SNMP на різних ОС"""
+
+    DEBIAN_UBUNTU = "sudo apt-get install snmp snmp-mibs-downloader"
+    DARWIN = "brew install net-snmp"
+    WINDOWS = "Завантажте з https://www.net-snmp.org/download.html"
+    REDHAT_CENTOS = "sudo yum install net-snmp-utils"
+    ARCH = "sudo pacman -S net-snmp"
+    DEFAULT = "Встановіть net-snmp пакет для вашої ОС"
+
+
+@dataclass
+class SNMPConfig:
+    """Конфігурація для SNMP з'єднання"""
+
+    # Таймаути
+    COMMAND_TIMEOUT: int = 5
+    SNMP_TIMEOUT: int = 10
+
+    # Обмеження
+    MAX_PHYSICAL_INTERFACES: int = 48
+    MAX_RETRIES: int = 3
+
+    # Підтримувані версії SNMP
+    SUPPORTED_VERSIONS: tuple = ("1", "2c", "3")
+
+    # Типи інтерфейсів для фільтрації (фізичні інтерфейси)
+    PHYSICAL_INTERFACE_TYPES: tuple = (
+        InterfaceType.ETHERNET.value,
+        InterfaceType.FAST_ETHERNET.value,
+        InterfaceType.GIGABIT_ETHERNET.value,
+        InterfaceType.PPPOE.value,
+        InterfaceType.WIRELESS.value,
+    )
+
+
 class SNMPToolsChecker:
     """Клас для перевірки наявності SNMP-інструментів в системі"""
-
-    # Константи для конфігурації
-    TIMEOUT = 5
 
     @classmethod
     def is_installed(cls) -> bool:
@@ -24,6 +71,7 @@ class SNMPToolsChecker:
         Перевіряє, чи встановлені ВСІ необхідні SNMP-інструменти в системі.
         Повертає True, лише якщо всі інструменти доступні.
         """
+        config = SNMPConfig()
 
         try:
             # Перевіряємо кожну команду, передаючи її назву
@@ -32,7 +80,7 @@ class SNMPToolsChecker:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=True,
-                timeout=cls.TIMEOUT,
+                timeout=config.COMMAND_TIMEOUT,
             )
         except (
             FileNotFoundError,
@@ -49,24 +97,47 @@ class SNMPToolsChecker:
         logger.debug("Усі необхідні SNMP-інструменти успішно знайдені.")
         return True
 
-    @staticmethod
-    def _log_installation_instructions():
-        """Повертає інструкції для встановлення SNMP"""
+    @classmethod
+    def _log_installation_instructions(cls):
+        """Виводить інструкції для встановлення SNMP залежно від ОС"""
         os_name = platform.system()
 
-        instructions = {
-            "Debian/Ubuntu": "sudo apt-get install snmp snmp-mibs-downloader",
-            "Darwin": "brew install net-snmp",
-            "Windows": "Завантажте з https://www.net-snmp.org/download.html",
+        # Маппінг ОС на інструкції
+        os_instructions = {
+            "Linux": cls._get_linux_instruction(),
+            "Darwin": OSInstructions.DARWIN.value,
+            "Windows": OSInstructions.WINDOWS.value,
         }
 
-        instruction = instructions.get(
-            os_name, "Встановіть net-snmp пакет для вашої ОС"
+        instruction = os_instructions.get(
+            os_name, OSInstructions.DEFAULT.value
         )
         logger.warning(
             "SNMP утиліти не знайдено.\n" "Будь ласка, встановіть їх:\n" "%s",
             instruction,
         )
+
+    @staticmethod
+    def _get_linux_instruction() -> str:
+        """Повертає специфічну інструкцію для Linux дистрибутивів"""
+        try:
+            # Визначаємо дистрибутив
+            with open("/etc/os-release", "r") as f:
+                content = f.read().lower()
+                if "ubuntu" in content or "debian" in content:
+                    return OSInstructions.DEBIAN_UBUNTU.value
+                elif (
+                    "centos" in content
+                    or "rhel" in content
+                    or "fedora" in content
+                ):
+                    return OSInstructions.REDHAT_CENTOS.value
+                elif "arch" in content:
+                    return OSInstructions.ARCH.value
+        except FileNotFoundError:
+            pass
+
+        return OSInstructions.DEFAULT.value
 
 
 class SwitchSNMP:
@@ -104,6 +175,7 @@ class SwitchSNMP:
         self.host = host
         self.community = community
         self.version = version
+        self.config = SNMPConfig()
         self.is_snmp_available = SNMPToolsChecker.is_installed()
 
     def get_system_info(self) -> Dict[str, Optional[str]]:
@@ -197,33 +269,15 @@ class SwitchSNMP:
                 interfaces[index] = {
                     "name": oid_data[self.OID_IF_DESCR].get(index, ""),
                     "alias": oid_data[self.OID_IF_ALIAS].get(index, ""),
-                    "speed": self._safe_int(
-                        oid_data[self.OID_IF_SPEED].get(index, "")
-                    ),
-                    "in_octets": self._safe_int(
-                        oid_data[self.OID_IF_IN_OCTETS].get(index)
-                    ),
-                    "out_octets": self._safe_int(
-                        oid_data[self.OID_IF_OUT_OCTETS].get(index)
-                    ),
-                    "in_pkts": self._safe_int(
-                        oid_data[self.OID_IF_IN_PKTS].get(index)
-                    ),
-                    "out_pkts": self._safe_int(
-                        oid_data[self.OID_IF_OUT_PKTS].get(index)
-                    ),
-                    "in_errors": self._safe_int(
-                        oid_data[self.OID_IF_IN_ERRORS].get(index)
-                    ),
-                    "out_errors": self._safe_int(
-                        oid_data[self.OID_IF_OUT_ERRORS].get(index)
-                    ),
-                    "admin_status": self._safe_int(
-                        oid_data[self.OID_IF_ADMIN_STATUS].get(index)
-                    ),
-                    "status": self._safe_int(
-                        oid_data[self.OID_IF_STATUS].get(index)
-                    ),
+                    "speed": self._safe_int(oid_data[self.OID_IF_SPEED].get(index, "")),
+                    "in_octets": self._safe_int(oid_data[self.OID_IF_IN_OCTETS].get(index)),
+                    "out_octets": self._safe_int(oid_data[self.OID_IF_OUT_OCTETS].get(index)),
+                    "in_pkts": self._safe_int(oid_data[self.OID_IF_IN_PKTS].get(index)),
+                    "out_pkts": self._safe_int(oid_data[self.OID_IF_OUT_PKTS].get(index)),
+                    "in_errors": self._safe_int(oid_data[self.OID_IF_IN_ERRORS].get(index)),
+                    "out_errors": self._safe_int(oid_data[self.OID_IF_OUT_ERRORS].get(index)),
+                    "admin_status": self._safe_int(oid_data[self.OID_IF_ADMIN_STATUS].get(index)),
+                    "status": self._safe_int(oid_data[self.OID_IF_STATUS].get(index)),
                 }
 
             logger.info(
@@ -243,15 +297,16 @@ class SwitchSNMP:
         indexes = self._snmp_walk(self.OID_IF_TYPE)
         return [
             index
-            for index, value in indexes.items()
-            if value in ("6", "62", "117") and index <= 48
+            for index, value_raw in indexes.items()
+            if (value_raw in self.config.PHYSICAL_INTERFACE_TYPES and
+                index <= self.config.MAX_PHYSICAL_INTERFACES)
         ]
 
     @staticmethod
-    def _safe_int(value: Optional[str]) -> int:
+    def _safe_int(value_raw: Optional[str]) -> int:
         """Безпечне перетворення в ціле число"""
         try:
-            return int(value) if value else 0
+            return int(value_raw) if value_raw else 0
         except (ValueError, TypeError):
             return 0
 
