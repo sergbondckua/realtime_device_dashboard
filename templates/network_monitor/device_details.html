@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Деталі пристрою - {{ device_ip }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='network_monitor/css/style.css') }}">
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>📡 Деталі пристрою: {{ device_ip }}</h1>
+    <div class="status-bar">
+      <a href="/" class="filter-btn">← До списку пристроїв</a>
+      <div class="status-item">
+        <div class="status-indicator status-online"></div>
+        <span>Активних портів: {{ active_ports_count }}/{{ total_ports_count }}</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="system-info">
+    <h2>Системна інформація</h2>
+    <div class="info-grid">
+      <div class="info-item">
+        <div class="info-label">Назва системи</div>
+        <div class="info-value">{{ system_info.system_name }}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Модель</div>
+        <div class="info-value">{{ system_info.model }}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">MAC адреса</div>
+        <div class="info-value">{{ system_info.mac_address }}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Час роботи</div>
+        <div class="info-value">{{ system_info.uptime }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="table_port">
+    <div class="filters">
+      <button class="filter-btn active" data-filter="all">Усі порти</button>
+      <button class="filter-btn" data-filter="active">Активні</button>
+      <button class="filter-btn" data-filter="inactive">Неактивні</button>
+    </div>
+
+    <div class="legend desktop-only">
+      <div>Порт</div>
+      <div>Підключення</div>
+      <div>Статус</div>
+      <div>Трафік</div>
+      <div></div>
+      <div>Графік</div>
+    </div>
+
+    {% for iface_id, iface in interfaces.items() %}
+      <div class="item" data-status="{% if iface.oper_status == 1 %}active{% else %}inactive{% endif %}">
+        <div class="port_number">
+          {{ iface_id }}
+          <span class="port_edit desktop-only">✎</span>
+        </div>
+        <div class="port_connection">
+          <div class="client-name">{{ iface.alias if iface.alias else "" }}</div>
+          <div class="port-descr">{{ iface.name }}</div>
+          {% if iface.speed > 0 %}
+            <div class="device-info">
+              <span class="label_backblack">{{ iface.speed//1000000 }}M</span>
+              {{ iface.speed|format_speed }}
+            </div>
+          {% endif %}
+        </div>
+        <div>
+          <div class="port_admin_status {% if iface.admin_status == 1 %}port_green{% else %}port_red{% endif %}">
+            {{ "Активно" if iface.admin_status == 1 else "Вимкнено" }}
+          </div>
+          <div class="port_link_status {% if iface.oper_status == 1 %}port_green{% else %}port_red{% endif %}">
+            {{ "up" if iface.oper_status == 1 else "down" }}
+          </div>
+        </div>
+        <div class="port_traf">
+          <div>
+            <span class="traf-icon us-traf-in">⬇️</span>
+            <span class="bold_text">{{ iface.in_octets|format_bytes }}</span>
+            <span class="div_small">({{ iface.in_pkts|format_packets }})</span>
+          </div>
+          <div>
+            <span class="traf-icon us-traf-out">⬆️</span>
+            <span class="bold_text">{{ iface.out_octets|format_bytes }}</span>
+            <span class="div_small">({{ iface.out_pkts|format_packets }})</span>
+          </div>
+          {% if iface.in_errors > 0 or iface.out_errors > 0 %}
+            <div class="red_text">
+              Помилок: {{ iface.in_errors + iface.out_errors }}
+            </div>
+          {% endif %}
+        </div>
+        <div class="port_color {% if iface.oper_status == 1 %}active{% endif %}"></div>
+        <div class="port_traf">
+          <div class="traf-speed">
+            <span>▼ {{ (iface.in_octets//1024)//60 }} Kb/с</span> |
+            <span>▲ {{ (iface.out_octets//1024)//60 }} Kb/с</span>
+          </div>
+{#          <div class="add-connection desktop-only">+ Додати з'єднання</div>#}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+
+  <div class="last-update">
+    Оновлено: {{ last_update }}
+  </div>
+</div>
+
+<script>
+    // Фільтрація портів
+    document.querySelectorAll('.filter-btn').forEach(button => {
+        button.addEventListener('click', function () {
+            const filter = this.getAttribute('data-filter');
+
+            // Оновлення активних кнопок
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            this.classList.add('active');
+
+            // Фільтрація рядків
+            document.querySelectorAll('.item').forEach(row => {
+                if (filter === 'all') {
+                    row.style.display = '';
+                } else {
+                    row.style.display =
+                        row.getAttribute('data-status') === filter ? '' : 'none';
+                }
+            });
+        });
+    });
+
+    // Пульсація для активних портів
+    setInterval(() => {
+        document.querySelectorAll('.port_color.active').forEach(el => {
+            el.style.animation = 'lightPulse 0.1s infinite alternate';
+            setTimeout(() => {
+                el.style.animation = '';
+            }, 100);
+        });
+    }, 1000);
+</script>
+</body>
+</html>

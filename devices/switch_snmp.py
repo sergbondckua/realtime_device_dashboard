@@ -1,10 +1,13 @@
+import asyncio
 import logging
 import re
-import subprocess
 import platform
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Tuple
+from functools import wraps
+
+import aiofiles
 
 # Налаштування логування
 logging.basicConfig(
@@ -42,15 +45,16 @@ class SNMPConfig:
     """Конфігурація для SNMP з'єднання"""
 
     # Таймаути
-    COMMAND_TIMEOUT: int = 5
-    SNMP_TIMEOUT: int = 10
+    COMMAND_TIMEOUT: int = 3
+    SNMP_TIMEOUT: int = 3
 
     # Обмеження
     MAX_PHYSICAL_INTERFACES: int = 48
     MAX_RETRIES: int = 3
+    MAX_CONCURRENT_REQUESTS: int = 10  # Максимум одночасних запитів
 
     # Підтримувані версії SNMP
-    SUPPORTED_VERSIONS: tuple = ("1", "2c", "3")
+    SUPPORTED_VERSIONS: tuple = ("1", "2c")
 
     # Типи інтерфейсів для фільтрації (фізичні інтерфейси)
     PHYSICAL_INTERFACE_TYPES: tuple = (
@@ -62,49 +66,117 @@ class SNMPConfig:
     )
 
 
+@dataclass
+class InterfaceStats:
+    """Структура даних для статистики інтерфейсу"""
+
+    index: int
+    name: str
+    alias: str
+    speed: int
+    in_octets: int
+    out_octets: int
+    in_pkts: int
+    out_pkts: int
+    in_errors: int
+    out_errors: int
+    admin_status: int
+    oper_status: int
+
+    @property
+    def total_octets(self) -> int:
+        """Загальна кількість переданих байтів"""
+        return self.in_octets + self.out_octets
+
+    @property
+    def total_errors(self) -> int:
+        """Загальна кількість помилок"""
+        return self.in_errors + self.out_errors
+
+
+def async_retry(max_retries: int = 3, delay: float = 1.0):
+    """Декоратор для асинхронного retry з exponential backoff"""
+
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        wait_time = delay * (2**attempt)  # Exponential backoff
+                        logger.warning(
+                            "Спроба %d/%d не вдалась: %s. Чекаємо %.1fs перед наступною спробою",
+                            attempt + 1,
+                            max_retries,
+                            e,
+                            wait_time,
+                        )
+                        await asyncio.sleep(wait_time)
+                    else:
+                        logger.error(
+                            "Усі %d спроб вичерпано: %s", max_retries, e
+                        )
+            raise last_exception
+
+        return wrapper
+
+    return decorator
+
+
 class SNMPToolsChecker:
     """Клас для перевірки наявності SNMP-інструментів в системі"""
 
     @classmethod
-    def is_installed(cls) -> bool:
+    async def is_installed(cls) -> bool:
         """
-        Перевіряє, чи встановлені ВСІ необхідні SNMP-інструменти в системі.
+        Асинхронно перевіряє, чи встановлені ВСІ необхідні SNMP-інструменти в системі.
         Повертає True, лише якщо всі інструменти доступні.
         """
         config = SNMPConfig()
 
         try:
-            # Перевіряємо кожну команду, передаючи її назву
-            subprocess.run(
-                ["snmpwalk", "-V"],  # "-V" для перевірки версії
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=True,
-                timeout=config.COMMAND_TIMEOUT,
+            # Асинхронно виконуємо перевірку
+            proc = await asyncio.create_subprocess_exec(
+                "snmpwalk",
+                "-V",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.DEVNULL,
             )
-        except (
-            FileNotFoundError,
-            subprocess.CalledProcessError,
-            subprocess.TimeoutExpired,
-        ) as e:
-            # Якщо команда не знайдена або виконується з помилкою,
-            # логуємо це та одразу повертаємо False.
-            logger.error(f"Помилка перевірки інструмента SNMP: {e}")
-            cls._log_installation_instructions()
+
+            try:
+                await asyncio.wait_for(
+                    proc.wait(), timeout=config.COMMAND_TIMEOUT
+                )
+                if proc.returncode == 0:
+                    logger.debug(
+                        "Усі необхідні SNMP-інструменти успішно знайдені."
+                    )
+                    return True
+            except asyncio.TimeoutError:
+                proc.kill()
+                raise
+
+        except Exception as e:
+            logger.error("Помилка перевірки інструмента SNMP: %s", e)
+            await cls._log_installation_instructions()
             return False
 
-        # Якщо цикл завершився без помилок, значить всі інструменти на місці.
-        logger.debug("Усі необхідні SNMP-інструменти успішно знайдені.")
-        return True
+        await cls._log_installation_instructions()
+        return False
 
     @classmethod
-    def _log_installation_instructions(cls):
-        """Виводить інструкції для встановлення SNMP залежно від ОС"""
+    async def _log_installation_instructions(cls):
+        """Асинхронно виводить інструкції для встановлення SNMP залежно від ОС"""
         os_name = platform.system()
 
         # Маппінг ОС на інструкції
         os_instructions = {
-            "Linux": cls._get_linux_instruction(),
+            "Linux": await cls._get_linux_instruction(),
             "Darwin": OSInstructions.DARWIN.value,
             "Windows": OSInstructions.WINDOWS.value,
         }
@@ -118,19 +190,14 @@ class SNMPToolsChecker:
         )
 
     @staticmethod
-    def _get_linux_instruction() -> str:
-        """Повертає специфічну інструкцію для Linux дистрибутивів"""
+    async def _get_linux_instruction() -> str:
         try:
-            # Визначаємо дистрибутив
-            with open("/etc/os-release", "r") as f:
-                content = f.read().lower()
+            async with aiofiles.open("/etc/os-release", "r") as f:
+                content = (await f.read()).lower()
+
                 if "ubuntu" in content or "debian" in content:
                     return OSInstructions.DEBIAN_UBUNTU.value
-                elif (
-                    "centos" in content
-                    or "rhel" in content
-                    or "fedora" in content
-                ):
+                elif any(x in content for x in ["centos", "rhel", "fedora"]):
                     return OSInstructions.REDHAT_CENTOS.value
                 elif "arch" in content:
                     return OSInstructions.ARCH.value
@@ -140,13 +207,8 @@ class SNMPToolsChecker:
         return OSInstructions.DEFAULT.value
 
 
-class SwitchSNMP:
-    """Клас для роботи з комутатором через SNMP
-    Args:
-        host (str): IP-адреса комутатора
-        community (str): Community-строка для доступу до комутатора
-        version (str): Версія SNMP-протоколу (2c)
-    """
+class AsyncSwitchSNMP:
+    """Асинхронний клас для роботи з комутатором через SNMP"""
 
     # Системні OID
     OID_SYS_DESCR = "1.3.6.1.2.1.1.1.0"  # sysDescr (Модель, прошивка)
@@ -176,61 +238,94 @@ class SwitchSNMP:
         self.community = community
         self.version = version
         self.config = SNMPConfig()
-        self.is_snmp_available = SNMPToolsChecker.is_installed()
+        self._semaphore = asyncio.Semaphore(
+            self.config.MAX_CONCURRENT_REQUESTS
+        )
+        self._is_snmp_available = None  # Кешування результату
 
-    def get_system_info(self) -> Dict[str, Optional[str]]:
+    async def _check_snmp_availability(self) -> bool:
+        """Кешовано перевіряє доступність SNMP інструментів"""
+        if self._is_snmp_available is None:
+            self._is_snmp_available = await SNMPToolsChecker.is_installed()
+        return self._is_snmp_available
+
+    @async_retry(max_retries=SNMPConfig.MAX_RETRIES, delay=1.0)
+    async def get_system_info(self) -> Dict[str, Optional[str]]:
         """
-        Отримує основну системну інформацію про пристрій.
+        Асинхронно отримує основну системну інформацію про пристрій.
         """
-        if not self.is_snmp_available:
+        if not await self._check_snmp_availability():
             logger.error(
                 "Спроба отримати інформацію про систему при відсутніх SNMP інструментах"
             )
             return {}
 
-        info = {}
         try:
-            # Отримання системної інформації
-            info["model"] = self._snmp_get(self.OID_SYS_DESCR)
-            info["system_name"] = self._snmp_get(self.OID_SYS_NAME)
-            info["uptime"] = self._snmp_get(self.OID_SYS_UPTIME)
+            # Паралельно отримуємо системну інформацію
+            system_tasks = [
+                self._snmp_get(self.OID_SYS_DESCR),
+                self._snmp_get(self.OID_SYS_NAME),
+                self._snmp_get(self.OID_SYS_UPTIME),
+            ]
 
-            # Отримання базової MAC-адреси
-            # Для цього потрібно пройтися по інтерфейсах і знайти один з базовим типом
-            if_types = self._snmp_walk(self.OID_IF_TYPE)
-            mac_address_found = False
-            for index, if_type in if_types.items():
-                # Зазвичай, MAC-адреса VLAN-інтерфейсу або першого фізичного
-                # є базовою. Тут ми беремо перший, що має MAC-адресу.
-                if if_type in ("6", "62", "117"):
-                    mac_oid = f"{self.OID_SYS_MAC}.{index}"
-                    mac_addr = self._snmp_get(mac_oid).strip()
-                    if mac_addr:
-                        info["mac_address"] = mac_addr.replace(" ", ":")
-                        mac_address_found = True
-                        break
-            if not mac_address_found:
-                info["mac_address"] = "00:00:00:00:00:00"
+            model, system_name, uptime = await asyncio.gather(*system_tasks)
+
+            # Отримуємо базову MAC-адресу
+            mac_address = await self._get_base_mac_address()
+
+            info = {
+                "model": model,
+                "system_name": system_name,
+                "uptime": uptime,
+                "mac_address": mac_address,
+            }
+
+            logger.info("Системна інформація успішно отримана.")
+            return info
 
         except Exception as e:
             logger.error(
-                f"Критична помилка при отриманні системної інформації: {e}",
+                "Критична помилка при отриманні системної інформації: %s",
+                e,
                 exc_info=True,
             )
             return {}
 
-        logger.info("Системна інформація успішно отримана.")
-        return info
+    async def _get_base_mac_address(self) -> str:
+        """Асинхронно отримує базову MAC-адресу пристрою"""
+        if_types = await self._snmp_walk(self.OID_IF_TYPE)
 
-    def get_interfaces_stats(self) -> Dict[int, Dict[str, Any]]:
+        for index, if_type in if_types.items():
+            # Перевіряємо, чи це фізичний інтерфейс
+            if if_type in self.config.PHYSICAL_INTERFACE_TYPES:
+                mac_oid = f"{self.OID_SYS_MAC}.{index}"
+                mac_addr = await self._snmp_get(mac_oid)
+                if mac_addr and mac_addr.strip():
+                    return self._format_mac_address(mac_addr.strip())
+
+        return "00:00:00:00:00:00"
+
+    @staticmethod
+    def _format_mac_address(mac_string: str) -> str:
+        """Форматує MAC-адресу у стандартний вигляд"""
+        # Видаляємо всі пробіли та розділяємо по байтах
+        clean_mac = mac_string.replace(" ", "")
+        if len(clean_mac) == 12:  # Hex без розділювачів
+            return ":".join(clean_mac[i : i + 2] for i in range(0, 12, 2))
+        else:
+            # Припускаємо, що це вже форматована MAC-адреса
+            return mac_string.replace(" ", ":")
+
+    @async_retry(max_retries=SNMPConfig.MAX_RETRIES, delay=1.0)
+    async def get_interfaces_stats(self) -> Dict[int, InterfaceStats]:
         """
-        Отримує статистику всіх інтерфейсів комутатора через SNMP
+        Асинхронно отримує статистику всіх інтерфейсів комутатора через SNMP
 
         Returns:
             Словник зі статистикою інтерфейсів, де ключ - індекс інтерфейсу,
-            значення - словник з параметрами інтерфейсу
+            значення - об'єкт InterfaceStats
         """
-        if not self.is_snmp_available:
+        if not await self._check_snmp_availability():
             logger.error(
                 "Спроба отримати статистику при відсутніх SNMP інструментах"
             )
@@ -238,7 +333,7 @@ class SwitchSNMP:
 
         try:
             # Отримуємо індекси інтерфейсів
-            if_indexes = self._get_interface_indexes()
+            if_indexes = await self._get_interface_indexes()
             if not if_indexes:
                 logger.warning("Не знайдено жодного інтерфейсу")
                 return {}
@@ -258,27 +353,59 @@ class SwitchSNMP:
                 self.OID_IF_ADMIN_STATUS,
             ]
 
-            # Збираємо всі дані за один прохід
-            oid_data = {}
-            for oid in target_oids:
-                oid_data[oid] = self._snmp_walk(oid)
+            # Паралельно збираємо всі дані
+            logger.debug(
+                "Початок паралельного збору даних для %d OID", len(target_oids)
+            )
+            start_time = asyncio.get_event_loop().time()
+
+            oid_tasks = [self._snmp_walk(oid) for oid in target_oids]
+            oid_results = await asyncio.gather(*oid_tasks)
+
+            end_time = asyncio.get_event_loop().time()
+            logger.debug(
+                "Паралельний збір даних завершено за %s.2f секунди",
+                end_time - start_time,
+            )
+
+            # Створюємо словник результатів
+            oid_data = dict(zip(target_oids, oid_results))
 
             # Формуємо результат для кожного інтерфейсу
             interfaces = {}
             for index in if_indexes:
-                interfaces[index] = {
-                    "name": oid_data[self.OID_IF_DESCR].get(index, ""),
-                    "alias": oid_data[self.OID_IF_ALIAS].get(index, ""),
-                    "speed": self._safe_int(oid_data[self.OID_IF_SPEED].get(index, "")),
-                    "in_octets": self._safe_int(oid_data[self.OID_IF_IN_OCTETS].get(index)),
-                    "out_octets": self._safe_int(oid_data[self.OID_IF_OUT_OCTETS].get(index)),
-                    "in_pkts": self._safe_int(oid_data[self.OID_IF_IN_PKTS].get(index)),
-                    "out_pkts": self._safe_int(oid_data[self.OID_IF_OUT_PKTS].get(index)),
-                    "in_errors": self._safe_int(oid_data[self.OID_IF_IN_ERRORS].get(index)),
-                    "out_errors": self._safe_int(oid_data[self.OID_IF_OUT_ERRORS].get(index)),
-                    "admin_status": self._safe_int(oid_data[self.OID_IF_ADMIN_STATUS].get(index)),
-                    "status": self._safe_int(oid_data[self.OID_IF_STATUS].get(index)),
-                }
+                interfaces[index] = InterfaceStats(
+                    index=index,
+                    name=oid_data[self.OID_IF_DESCR].get(index, ""),
+                    alias=oid_data[self.OID_IF_ALIAS].get(index, ""),
+                    speed=self._safe_int(
+                        oid_data[self.OID_IF_SPEED].get(index, "")
+                    ),
+                    in_octets=self._safe_int(
+                        oid_data[self.OID_IF_IN_OCTETS].get(index)
+                    ),
+                    out_octets=self._safe_int(
+                        oid_data[self.OID_IF_OUT_OCTETS].get(index)
+                    ),
+                    in_pkts=self._safe_int(
+                        oid_data[self.OID_IF_IN_PKTS].get(index)
+                    ),
+                    out_pkts=self._safe_int(
+                        oid_data[self.OID_IF_OUT_PKTS].get(index)
+                    ),
+                    in_errors=self._safe_int(
+                        oid_data[self.OID_IF_IN_ERRORS].get(index)
+                    ),
+                    out_errors=self._safe_int(
+                        oid_data[self.OID_IF_OUT_ERRORS].get(index)
+                    ),
+                    admin_status=self._safe_int(
+                        oid_data[self.OID_IF_ADMIN_STATUS].get(index)
+                    ),
+                    oper_status=self._safe_int(
+                        oid_data[self.OID_IF_STATUS].get(index)
+                    ),
+                )
 
             logger.info(
                 "Отримано статистику для %d інтерфейсів", len(interfaces)
@@ -287,32 +414,35 @@ class SwitchSNMP:
 
         except Exception as e:
             logger.error(
-                f"Критична помилка при отриманні статистики: {e}",
+                "Критична помилка при отриманні статистики: %s",
+                e,
                 exc_info=True,
             )
             return {}
 
-    def _get_interface_indexes(self) -> List[int]:
-        """Отримує список індексів фізичних інтерфейсів"""
-        indexes = self._snmp_walk(self.OID_IF_TYPE)
+    async def _get_interface_indexes(self) -> List[int]:
+        """Асинхронно отримує список індексів фізичних інтерфейсів"""
+        indexes = await self._snmp_walk(self.OID_IF_TYPE)
         return [
             index
-            for index, value_raw in indexes.items()
-            if (value_raw in self.config.PHYSICAL_INTERFACE_TYPES and
-                index <= self.config.MAX_PHYSICAL_INTERFACES)
+            for index, value in indexes.items()
+            if (
+                value in self.config.PHYSICAL_INTERFACE_TYPES
+                and index <= self.config.MAX_PHYSICAL_INTERFACES
+            )
         ]
 
     @staticmethod
-    def _safe_int(value_raw: Optional[str]) -> int:
+    def _safe_int(value: Optional[str]) -> int:
         """Безпечне перетворення в ціле число"""
         try:
-            return int(value_raw) if value_raw else 0
+            return int(value) if value else 0
         except (ValueError, TypeError):
             return 0
 
-    def _snmp_walk(self, base_oid: str) -> Dict[int, str]:
+    async def _snmp_walk(self, base_oid: str) -> Dict[int, str]:
         """
-        Виконує SNMP walk для вказаного базового OID і повертає результати
+        Асинхронно виконує SNMP walk для вказаного базового OID і повертає результати
 
         Args:
             base_oid: Базовий OID для walk
@@ -320,43 +450,54 @@ class SwitchSNMP:
         Returns:
             Словник {index: value} для всіх знайдених інстансів
         """
-        try:
-            command = [
-                "snmpwalk",
-                "-v",
-                self.version,
-                "-c",
-                self.community,
-                "-OQ",  # Тільки OID та значення
-                "-On",  # Числовий формат
-                self.host,
-                base_oid,
-            ]
+        async with self._semaphore:  # Обмежуємо кількість одночасних запитів
+            try:
+                # Створюємо процес асинхронно
+                proc = await asyncio.create_subprocess_exec(
+                    "snmpwalk",
+                    "-v",
+                    self.version,
+                    "-c",
+                    self.community,
+                    "-OQ",  # Тільки OID та значення
+                    "-On",  # Числовий формат
+                    self.host,
+                    base_oid,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
 
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=10,
-            )
-            return self._parse_snmp_walk_output(result.stdout)
+                # Чекаємо завершення з таймаутом
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=self.config.SNMP_TIMEOUT
+                )
 
-        except subprocess.CalledProcessError as e:
-            logger.error(
-                f"SNMP помилка (код {e.returncode}): {e.stderr.strip()}"
-            )
-            return {}
-        except subprocess.TimeoutExpired:
-            logger.error(f"Таймаут виконання SNMP walk для OID {base_oid}")
-            return {}
-        except Exception as e:
-            logger.error(f"Невідома помилка при виконанні SNMP walk: {e}")
-            return {}
+                if proc.returncode == 0:
+                    return self._parse_snmp_walk_output(stdout.decode())
+                else:
+                    logger.error(
+                        "SNMP walk помилка для %s: %s}",
+                        base_oid,
+                        stderr.decode().strip(),
+                    )
+                    return {}
 
-    def _snmp_get(self, oid: str) -> Optional[str]:
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Таймаут виконання SNMP walk для OID %s", base_oid
+                )
+                try:
+                    proc.kill()
+                except:
+                    pass
+                return {}
+            except Exception as e:
+                logger.error("Невідома помилка при виконанні SNMP walk: %s", e)
+                return {}
+
+    async def _snmp_get(self, oid: str) -> Optional[str]:
         """
-        Виконує SNMP get для вказаного OID і повертає значення.
+        Асинхронно виконує SNMP get для вказаного OID і повертає значення.
 
         Args:
             oid: OID для запиту.
@@ -364,41 +505,55 @@ class SwitchSNMP:
         Returns:
             Значення або None, якщо сталася помилка.
         """
-        try:
-            command = [
-                "snmpget",
-                "-v",
-                self.version,
-                "-c",
-                self.community,
-                "-Oqv",  # Вивід лише значення
-                self.host,
-                oid,
-            ]
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=10,
-            )
-            value_raw = result.stdout.strip()
-            # Видаляємо лапки зі значення якщо вони є
-            if value_raw.startswith('"') and value_raw.endswith('"'):
-                value_raw = value_raw[1:-1]
-            return value_raw
+        async with self._semaphore:  # Обмежуємо кількість одночасних запитів
+            try:
+                # Створюємо процес асинхронно
+                proc = await asyncio.create_subprocess_exec(
+                    "snmpget",
+                    "-v",
+                    self.version,
+                    "-c",
+                    self.community,
+                    "-Oqv",  # Вивід лише значення
+                    self.host,
+                    oid,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
 
-        except subprocess.CalledProcessError as e:
-            logger.warning(
-                f"Не вдалося отримати OID {oid}. Помилка: {e.stderr.strip()}"
-            )
-            return None
-        except subprocess.TimeoutExpired:
-            logger.warning(f"Таймаут виконання SNMP get для OID {oid}")
-            return None
-        except Exception as e:
-            logger.warning(f"Невідома помилка при SNMP get для OID {oid}: {e}")
-            return None
+                # Чекаємо завершення з таймаутом
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=self.config.SNMP_TIMEOUT
+                )
+
+                if proc.returncode == 0:
+                    value_raw = stdout.decode().strip()
+                    # Видаляємо лапки зі значення якщо вони є
+                    if value_raw.startswith('"') and value_raw.endswith('"'):
+                        value_raw = value_raw[1:-1]
+                    return value_raw
+                else:
+                    logger.warning(
+                        "Не вдалося отримати OID %s: %s",
+                        oid,
+                        stderr.decode().strip(),
+                    )
+                    return None
+
+            except asyncio.TimeoutError:
+                logger.warning("Таймаут виконання SNMP get для OID %s", oid)
+                try:
+                    proc.kill()
+                except:
+                    pass
+                return None
+            except Exception as e:
+                logger.warning(
+                    "Невідома помилка при SNMP get для OID %s: %s",
+                    oid,
+                    e,
+                )
+                return None
 
     @staticmethod
     def _parse_snmp_walk_output(output: str) -> Dict[int, str]:
@@ -427,31 +582,127 @@ class SwitchSNMP:
 
         return results
 
+    @staticmethod
+    async def get_multiple_switches_stats(switches_config: List[Tuple[str, str, str]]
+    ) -> Dict[str, Dict[int, InterfaceStats]]:
+        """
+        Асинхронно отримує статистику з кількох комутаторів паралельно
 
-if __name__ == "__main__":
+        Args:
+            switches_config: Список кортежів (host, community, version)
 
-    # Ініціалізація комутатора
-    switch = SwitchSNMP("172.16.127.147")
+        Returns:
+            Словник {host: {interface_index: InterfaceStats}}
+        """
+        tasks = []
+        hosts = []
+        system_info = []
 
-    if switch.is_snmp_available:
-        # Виклик методів для роботи з комутатором
-        stats = switch.get_interfaces_stats()
+        for host, community, version in switches_config:
+            switch = AsyncSwitchSNMP(host, community, version)
+            tasks.append(switch.get_interfaces_stats())
+            system_info.append(switch.get_system_info())
+            hosts.append(host)
 
-        # Отримуємо та виводимо системну інформацію
-        system_info = switch.get_system_info()
+        logger.info(
+            "Початок паралельного збору даних з %d комутаторів",
+            len(switches_config),
+        )
+        start_time = asyncio.get_event_loop().time()
+        results_stats = await asyncio.gather(*tasks, return_exceptions=True)
+        results_system_info = await asyncio.gather(
+            *system_info, return_exceptions=True
+        )
+        end_time = asyncio.get_event_loop().time()
+        logger.info(
+            "Паралельний збір з %d комутаторів завершено за %.2f секунд",
+            len(switches_config),
+            end_time - start_time,
+        )
+
+        # Формуємо результат
+        switches_stats = {}
+        for i, host in enumerate(hosts):
+            sys_info = results_system_info[i]
+            stats = results_stats[i]
+
+            if isinstance(sys_info, Exception) or isinstance(stats, Exception):
+                logger.error(
+                    "Помилка отримання даних з %s: %s",
+                    host,
+                    sys_info if isinstance(sys_info, Exception) else stats,
+                )
+                switches_stats[host] = {}
+            else:
+                switches_stats[host] = {
+                    "system_info": sys_info,
+                    "interfaces": stats,
+                }
+
+        return switches_stats
+
+
+async def main():
+    """Основна асинхронна функція"""
+    try:
+        # Ініціалізація комутатора
+        switch = AsyncSwitchSNMP("192.168.5.20", "public", "2c")
+
+        # Паралельно отримуємо системну інформацію та статистику інтерфейсів
+        logger.info("Початок паралельного збору даних...")
+        start_time = asyncio.get_event_loop().time()
+
+        system_info_task = switch.get_system_info()
+        interfaces_stats_task = switch.get_interfaces_stats()
+
+        system_info, stats = await asyncio.gather(
+            system_info_task, interfaces_stats_task
+        )
+
+        end_time = asyncio.get_event_loop().time()
+        logger.info(f"Загальний час виконання: {end_time - start_time:.2f}с")
+
+        # Виводимо результати
         print("--- Системна інформація ---")
+        print(system_info)
         for key, value in system_info.items():
             print(f"{key}: {value}")
         print("-" * 40)
 
-        for idx, data in stats.items():
+        for idx, interface in stats.items():
             print(f"Інтерфейс {idx}:")
-            print(f"  Ім'я: {data['name']}")
-            print(f"  Alias: {data['alias']}")
-            print(f"  Вхідні байти: {data['in_octets']}")
-            print(f"  Вихідні байти: {data['out_octets']}")
-            print(f"  Помилки: {data['in_errors']} / {data['out_errors']}")
-            print(f"  Статус: {data['status']}")
+            print(f"  Ім'я: {interface.name}")
+            print(f"  Alias: {interface.alias}")
+            print(
+                f"  Статус: {'UP' if interface.oper_status == 1 else 'DOWN'}"
+            )
+            print(f"  Admin статус: {interface.admin_status}")
+            print(f"  Oper статус: {interface.oper_status}")
+            print(f"  Вхідні байти: {interface.in_octets}")
+            print(f"  Вихідні байти: {interface.out_octets}")
+            print(f"  Загалом байтів: {interface.total_octets}")
+            print(f"  Помилки: {interface.in_errors} / {interface.out_errors}")
+            print(f"  Загалом помилок: {interface.total_errors}")
             print("-" * 40)
-    else:
-        print("SNMP недоступний - виконайте інструкції з логів")
+
+        # Приклад роботи з кількома комутаторами
+        print("\n--- Тест з кількома комутаторами ---")
+        switches_config = [
+            ("172.24.145.145", "public", "2c"),
+            ("192.168.5.1", "public", "2c"),  # Додайте більше комутаторів
+            ("192.168.5.11", "public", "2c"),  # Додайте більше комутаторів
+        ]
+
+        multi_results = await switch.get_multiple_switches_stats(
+            switches_config
+        )
+        for host, interfaces in multi_results.items():
+            print(f"Комутатор {host}: {len(interfaces)} інтерфейсів")
+
+    except Exception as e:
+        logger.error(f"Невідома помилка: {e}", exc_info=True)
+        print(f"Помилка: {e}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
