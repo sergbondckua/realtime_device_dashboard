@@ -1,0 +1,34 @@
+{% extends "network_monitor/base.html" %}
+
+{% block title %}Помилка{% endblock %}
+
+{% block content %}
+  <div class="header">
+    <h1>
+      <a href="/" class="nav-link">← Повернутися на головну</a>
+      ⚠️ Помилка
+    </h1>
+  </div>
+
+  <div class="system-info">
+    <h2>🚫 Щось пішло не так</h2>
+    <div class="info-grid">
+      <div class="info-item">
+        <div class="info-label">Опис помилки</div>
+        <div class="info-value">{{ error_message or 'Невідома помилка' }}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Час помилки</div>
+        <div class="info-value">{{ timestamp or 'Невідомо' }}</div>
+      </div>
+    </div>
+
+    <div style="margin-top: 20px; text-align: center;">
+      <a href="/" class="nav-link" style="font-size: 14px;">🏠 Повернутися на головну сторінку</a>
+    </div>
+  </div>
+{% endblock %}
+
+{% block auto_refresh_script %}
+  // Для сторінки помилок автооновлення не потрібне
+{% endblock %}

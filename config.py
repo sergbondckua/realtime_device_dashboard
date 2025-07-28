@@ -1,6 +1,25 @@
 DEVICES_IP_MAP = [
-    ("172.24.145.145", "public", "2c"),
-    ("192.168.5.1", "public", "2c"),
-    ("192.168.5.11", "public", "2c"),
-    ("192.168.5.20", "public", "2c"),
+    {
+        "name": "Office Fregat",
+        "ip": "172.24.135.17",
+        "community": "public",
+        "version": "2c",
+    },
+    {
+        "name": "YuliiaRouter",
+        "ip": "192.168.5.1",
+        "community": "public",
+        "version": "2c",
+    },
+    {
+        "name": "Switch Школа No26",
+        "ip": "192.168.5.11",
+        "community": "public",
+        "version": "2c",
+    },{
+        "name": "Router Stand",
+        "ip": "192.168.5.20",
+        "community": "public",
+        "version": "2c",
+    },
 ]

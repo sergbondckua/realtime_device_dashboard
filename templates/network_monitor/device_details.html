@@ -1,153 +1,293 @@
-<!DOCTYPE html>
-<html lang="uk">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Деталі пристрою - {{ device_ip }}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='network_monitor/css/style.css') }}">
-</head>
-<body>
-<div class="container">
+{% extends "network_monitor/base.html" %}
+
+{% block title %}{{ device_name }} - Деталі пристрою{% endblock %}
+
+{% block content %}
   <div class="header">
-    <h1>📡 Деталі пристрою: {{ device_ip }}</h1>
+    <h1>
+      <a href="/" class="nav-link"><i class="fas fa-arrow-left"></i> Повернутися</a>
+      <i class="fas fa-satellite-dish"></i> {{ device_name }}
+    </h1>
     <div class="status-bar">
-      <a href="/" class="filter-btn">← До списку пристроїв</a>
+      <div class="status-item" id="device-status-container">
+        <span class="status-icon {{ 'online' if device_status else 'offline' }}">
+            <i class="fas {{ 'fa-circle-check' if device_status else 'fa-circle-xmark' }}"></i>
+        </span>
+        <span id="device-status-text">{{ 'ONLINE' if device_status else 'OFFLINE' }}</span>
+      </div>
       <div class="status-item">
-        <div class="status-indicator status-online"></div>
-        <span>Активних портів: {{ active_ports_count }}/{{ total_ports_count }}</span>
+        <span>IP: {{ device_ip }}</span>
       </div>
     </div>
   </div>
 
-  <div class="system-info">
-    <h2>Системна інформація</h2>
-    <div class="info-grid">
-      <div class="info-item">
-        <div class="info-label">Назва системи</div>
-        <div class="info-value">{{ system_info.system_name }}</div>
-      </div>
-      <div class="info-item">
-        <div class="info-label">Модель</div>
-        <div class="info-value">{{ system_info.model }}</div>
-      </div>
-      <div class="info-item">
-        <div class="info-label">MAC адреса</div>
-        <div class="info-value">{{ system_info.mac_address }}</div>
-      </div>
-      <div class="info-item">
-        <div class="info-label">Час роботи</div>
-        <div class="info-value">{{ system_info.uptime }}</div>
-      </div>
-    </div>
+  <div id="loading" class="loading" style="display: none;">
+    <div class="spinner"></div>
+    <div>Оновлення даних...</div>
   </div>
 
-  <div class="table_port">
-    <div class="filters">
-      <button class="filter-btn active" data-filter="all">Усі порти</button>
-      <button class="filter-btn" data-filter="active">Активні</button>
-      <button class="filter-btn" data-filter="inactive">Неактивні</button>
-    </div>
-
-    <div class="legend desktop-only">
-      <div>Порт</div>
-      <div>Підключення</div>
-      <div>Статус</div>
-      <div>Трафік</div>
-      <div></div>
-      <div>Графік</div>
-    </div>
-
-    {% for iface_id, iface in interfaces.items() %}
-      <div class="item" data-status="{% if iface.oper_status == 1 %}active{% else %}inactive{% endif %}">
-        <div class="port_number">
-          {{ iface_id }}
-          <span class="port_edit desktop-only">✎</span>
+  <div id="device-details-content">
+    {% if device_status and system_info %}
+      <div class="info-card">
+        <h2><i class="fas fa-chart-bar"></i> Системна інформація</h2>
+        <div class="info-grid">
+          <div class="info-item">
+            <div class="info-label">Модель</div>
+            <div class="info-value" id="system-model">{{ system_info.model or 'N/A' }}</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Ім'я</div>
+            <div class="info-value" id="system-name">{{ system_info.system_name or 'N/A' }}</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">MAC</div>
+            <div class="info-value" id="mac-address">{{ system_info.mac_address or 'N/A' }}</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Час роботи</div>
+            <div class="info-value" id="uptime">{{ system_info.uptime or 'N/A' }}</div>
+          </div>
         </div>
-        <div class="port_connection">
-          <div class="client-name">{{ iface.alias if iface.alias else "" }}</div>
-          <div class="port-descr">{{ iface.name }}</div>
-          {% if iface.speed > 0 %}
-            <div class="device-info">
-              <span class="label_backblack">{{ iface.speed//1000000 }}M</span>
-              {{ iface.speed|format_speed }}
+      </div>
+    {% endif %}
+
+    {% if device_status and interfaces %}
+      <div class="info-card">
+        <h2><i class="fas fa-plug"></i> Інтерфейси</h2>
+
+        <!-- Фільтр портів -->
+        <div class="port-filter">
+          <button class="filter-btn active" data-filter="all">Усі порти</button>
+          <button class="filter-btn" data-filter="active">Активні</button>
+          <button class="filter-btn" data-filter="inactive">Неактивні</button>
+        </div>
+
+        <div id="interfaces-list">
+          {% for interface_id, interface in interfaces.items() %}
+            {% set is_active = interface.admin_status == 1 and interface.oper_status == 1 %}
+            <div class="interface-row {{ 'active-port' if is_active else 'inactive-port' }}">
+              <div class="interface-name">
+                <span class="port-index">{{ interface.index }}</span>
+                {{ interface.name }}
+              </div>
+              <div class="interface-details">
+                <span>{{ interface.alias or '' }}</span>
+                <span class="speed"><i
+                    class="fas fa-gauge-high"></i> {{ (interface.speed / 1000000)|int if interface.speed else 0 }} Mbps</span>
+              </div>
+              <div class="interface-status">
+                <span
+                    class="status-tag {{ 'status-up' if interface.admin_status == 1 else 'status-down' }}">Admin: {{ 'UP' if interface.admin_status == 1 else 'DOWN' }}</span>
+                <span
+                    class="status-tag {{ 'status-up' if interface.oper_status == 1 else 'status-down' }}">Port: {{ 'UP' if interface.oper_status == 1 else 'DOWN' }}</span>
+              </div>
+              <div class="interface-traffic">
+                <div><i class="fas fa-arrow-down"></i> {{ "%.2f"|format((interface.in_octets or 0) / 1024 / 1024) }} MB
+                </div>
+                <div><i class="fas fa-arrow-up"></i> {{ "%.2f"|format((interface.out_octets or 0) / 1024 / 1024) }} MB
+                </div>
+              </div>
+              {% if interface.in_errors or interface.out_errors %}
+                <div class="interface-errors">
+                  <i class="fas fa-triangle-exclamation"></i> {{ interface.in_errors or 0 }}/{{ interface.out_errors or 0 }}
+                </div>
+              {% endif %}
             </div>
-          {% endif %}
-        </div>
-        <div>
-          <div class="port_admin_status {% if iface.admin_status == 1 %}port_green{% else %}port_red{% endif %}">
-            {{ "Активно" if iface.admin_status == 1 else "Вимкнено" }}
-          </div>
-          <div class="port_link_status {% if iface.oper_status == 1 %}port_green{% else %}port_red{% endif %}">
-            {{ "up" if iface.oper_status == 1 else "down" }}
-          </div>
-        </div>
-        <div class="port_traf">
-          <div>
-            <span class="traf-icon us-traf-in">⬇️</span>
-            <span class="bold_text">{{ iface.in_octets|format_bytes }}</span>
-            <span class="div_small">({{ iface.in_pkts|format_packets }})</span>
-          </div>
-          <div>
-            <span class="traf-icon us-traf-out">⬆️</span>
-            <span class="bold_text">{{ iface.out_octets|format_bytes }}</span>
-            <span class="div_small">({{ iface.out_pkts|format_packets }})</span>
-          </div>
-          {% if iface.in_errors > 0 or iface.out_errors > 0 %}
-            <div class="red_text">
-              Помилок: {{ iface.in_errors + iface.out_errors }}
-            </div>
-          {% endif %}
-        </div>
-        <div class="port_color {% if iface.oper_status == 1 %}active{% endif %}"></div>
-        <div class="port_traf">
-          <div class="traf-speed">
-            <span>▼ {{ (iface.in_octets//1024)//60 }} Kb/с</span> |
-            <span>▲ {{ (iface.out_octets//1024)//60 }} Kb/с</span>
-          </div>
-{#          <div class="add-connection desktop-only">+ Додати з'єднання</div>#}
+          {% endfor %}
         </div>
       </div>
-    {% endfor %}
+    {% else %}
+      <div class="info-card empty-state">
+        <h2><i class="fas fa-triangle-exclamation"></i> Дані недоступні</h2>
+        <p>Пристрій офлайн або не вдалося отримати інформацію.</p>
+      </div>
+    {% endif %}
   </div>
+{% endblock %}
 
-  <div class="last-update">
-    Оновлено: {{ last_update }}
-  </div>
-</div>
+{% block page_scripts %}
+  <script>
+      let currentFilter = 'all'; // Поточний вибраний фільтр
 
-<script>
-    // Фільтрація портів
-    document.querySelectorAll('.filter-btn').forEach(button => {
-        button.addEventListener('click', function () {
-            const filter = this.getAttribute('data-filter');
+      function startAutoRefresh() {
+          fetchData();
+          refreshInterval = setInterval(fetchData, 10000); // Оновлення кожні 10 сек
+      }
 
-            // Оновлення активних кнопок
-            document.querySelectorAll('.filter-btn').forEach(btn => {
-                btn.classList.remove('active');
-            });
-            this.classList.add('active');
+      function fetchData() {
+          document.getElementById('loading').style.display = 'flex';
+          fetch(`/api/device/{{ device_ip }}`)
+              .then(response => {
+                  if (!response.ok) {
+                      throw new Error('Network response was not ok');
+                  }
+                  return response.json();
+              })
+              .then(data => {
+                  // Перемальовуємо весь блок з даними
+                  document.getElementById('device-details-content').innerHTML = generateDeviceContent(data);
+                  // Оновлюємо статус у шапці
+                  updateHeaderStatus(data.device_status);
+                  // Налаштовуємо фільтри після оновлення
+                  setupPortFilters();
+                  // Застосовуємо поточний фільтр
+                  filterPorts(currentFilter);
+              })
+              .catch(error => {
+                  console.error('Помилка завантаження даних пристрою:', error);
+                  document.getElementById('device-details-content').innerHTML = `
+                <div class="info-card empty-state">
+                    <h2><i class="fas fa-triangle-exclamation"></i> Помилка завантаження</h2>
+                    <p>Не вдалося отримати дані. Пристрій може бути недоступний.</p>
+                </div>`;
+                  updateHeaderStatus(false);
+              })
+              .finally(() => {
+                  document.getElementById('loading').style.display = 'none';
+              });
+      }
 
-            // Фільтрація рядків
-            document.querySelectorAll('.item').forEach(row => {
-                if (filter === 'all') {
-                    row.style.display = '';
-                } else {
-                    row.style.display =
-                        row.getAttribute('data-status') === filter ? '' : 'none';
-                }
-            });
-        });
-    });
+      function updateHeaderStatus(isOnline) {
+          const container = document.getElementById('device-status-container');
+          const text = document.getElementById('device-status-text');
+          const iconClass = isOnline ? 'fa-circle-check' : 'fa-circle-xmark';
+          const statusClass = isOnline ? 'online' : 'offline';
 
-    // Пульсація для активних портів
-    setInterval(() => {
-        document.querySelectorAll('.port_color.active').forEach(el => {
-            el.style.animation = 'lightPulse 0.1s infinite alternate';
-            setTimeout(() => {
-                el.style.animation = '';
-            }, 100);
-        });
-    }, 1000);
-</script>
-</body>
-</html>
+          container.className = `status-item`; // Скидаємо класи
+          text.textContent = isOnline ? 'ONLINE' : 'OFFLINE';
+          container.innerHTML = `
+        <span class="status-icon ${statusClass}">
+            <i class="fas ${iconClass}"></i>
+        </span>
+        <span id="device-status-text">${isOnline ? 'ONLINE' : 'OFFLINE'}</span>`;
+      }
+
+      // Функція для фільтрації портів
+      function filterPorts(filterType) {
+          currentFilter = filterType;
+          const allRows = document.querySelectorAll('.interface-row');
+
+          allRows.forEach(row => {
+              switch (filterType) {
+                  case 'all':
+                      row.style.display = '';
+                      break;
+                  case 'active':
+                      if (row.classList.contains('active-port')) {
+                          row.style.display = '';
+                      } else {
+                          row.style.display = 'none';
+                      }
+                      break;
+                  case 'inactive':
+                      if (row.classList.contains('inactive-port')) {
+                          row.style.display = '';
+                      } else {
+                          row.style.display = 'none';
+                      }
+                      break;
+              }
+          });
+      }
+
+      // Налаштування обробників подій для фільтрів
+      function setupPortFilters() {
+          document.querySelectorAll('.filter-btn').forEach(btn => {
+              btn.addEventListener('click', function () {
+                  // Видаляємо активний клас у всіх кнопок
+                  document.querySelectorAll('.filter-btn').forEach(b => {
+                      b.classList.remove('active');
+                  });
+
+                  // Додаємо активний клас до поточної кнопки
+                  this.classList.add('active');
+
+                  // Застосовуємо фільтр
+                  filterPorts(this.dataset.filter);
+              });
+          });
+      }
+
+      // Функція для генерації HTML контенту на основі JSON
+      function generateDeviceContent(data) {
+          if (!data.device_status) {
+              return `
+        <div class="info-card empty-state">
+            <h2><i class="fas fa-triangle-exclamation"></i> Дані недоступні</h2>
+            <p>Пристрій офлайн або не вдалося отримати інформацію.</p>
+        </div>`;
+          }
+
+          let content = '';
+
+          if (data.system_info) {
+              const sys = data.system_info;
+              content += `
+        <div class="info-card">
+            <h2><i class="fas fa-chart-bar"></i> Системна інформація</h2>
+            <div class="info-grid">
+                <div class="info-item"><div class="info-label">Модель</div><div class="info-value">${sys.model || 'N/A'}</div></div>
+                <div class="info-item"><div class="info-label">Ім'я</div><div class="info-value">${sys.system_name || 'N/A'}</div></div>
+                <div class="info-item"><div class="info-label">MAC</div><div class="info-value">${sys.mac_address || 'N/A'}</div></div>
+                <div class="info-item"><div class="info-label">Час роботи</div><div class="info-value">${sys.uptime || 'N/A'}</div></div>
+            </div>
+        </div>`;
+          }
+
+          if (data.interfaces && Object.keys(data.interfaces).length > 0) {
+              let interfacesHtml = '';
+
+              // Додаємо фільтр портів
+              interfacesHtml += `
+        <div class="port-filter">
+            <button class="filter-btn ${currentFilter === 'all' ? 'active' : ''}" data-filter="all">Усі порти</button>
+            <button class="filter-btn ${currentFilter === 'active' ? 'active' : ''}" data-filter="active">Активні</button>
+            <button class="filter-btn ${currentFilter === 'inactive' ? 'active' : ''}" data-filter="inactive">Неактивні</button>
+        </div>`;
+
+              interfacesHtml += `<div id="interfaces-list">`;
+              for (const [id, iface] of Object.entries(data.interfaces)) {
+                  const isActive = iface.admin_status === 1 && iface.oper_status === 1;
+                  const portClass = isActive ? 'active-port' : 'inactive-port';
+
+                  const speedMbps = iface.speed ? Math.floor(iface.speed / 1000000) : 0;
+                  const inMB = ((iface.in_octets || 0) / 1024 / 1024).toFixed(2);
+                  const outMB = ((iface.out_octets || 0) / 1024 / 1024).toFixed(2);
+                  const adminUp = iface.admin_status === 1;
+                  const operUp = iface.oper_status === 1;
+
+                  let errorsHtml = '';
+                  if (iface.in_errors || iface.out_errors) {
+                      errorsHtml = `<div class="interface-errors"><i class="fas fa-triangle-exclamation"></i> ${iface.in_errors || 0}/${iface.out_errors || 0}</div>`;
+                  }
+
+                  interfacesHtml += `
+            <div class="interface-row ${portClass}">
+                <div class="interface-name"><span class="port-index">${iface.index}</span> ${iface.name}</div>
+                <div class="interface-details"><span>${iface.alias || ''}</span> <span class="speed"><i class="fas fa-gauge-high"></i> ${speedMbps} Mbps</span></div>
+                <div class="interface-status">
+                    <span class="status-tag ${adminUp ? 'status-up' : 'status-down'}">Admin: ${adminUp ? 'UP' : 'DOWN'}</span>
+                    <span class="status-tag ${operUp ? 'status-up' : 'status-down'}">Port: ${operUp ? 'UP' : 'DOWN'}</span>
+                </div>
+                <div class="interface-traffic">
+                    <div><i class="fas fa-arrow-down"></i> ${inMB} MB</div>
+                    <div><i class="fas fa-arrow-up"></i> ${outMB} MB</div>
+                </div>
+                ${errorsHtml}
+            </div>`;
+              }
+              interfacesHtml += `</div>`;
+              content += `<div class="info-card"><h2><i class="fas fa-plug"></i> Інтерфейси</h2>${interfacesHtml}</div>`;
+          }
+
+          return content;
+      }
+
+      // Ініціалізація фільтрів при завантаженні сторінки
+      document.addEventListener('DOMContentLoaded', function () {
+          if (document.querySelector('.port-filter')) {
+              setupPortFilters();
+          }
+      });
+  </script>
+{% endblock %}

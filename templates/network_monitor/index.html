@@ -1,61 +1,116 @@
-<!DOCTYPE html>
-<html lang="uk">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Моніторинг мережевих пристроїв</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='network_monitor/css/style.css') }}">
-  <script src="{{ url_for('static', filename='network_monitor/js/script.js') }}"></script>
-</head>
-<body>
-<div class="container">
-  <div class="header">
-    <h1>🖧 Моніторинг мережевих пристроїв</h1>
+{% extends "network_monitor/base.html" %}
+
+{% block title %}Моніторинг мережевого обладнання{% endblock %}
+
+{% block content %}
+<div class="header">
+    <h1><i class="fas fa-network-wired"></i> Моніторинг мережевого обладнання</h1>
     <div class="status-bar">
-      <div class="status-item">
-        <div class="status-indicator status-online"></div>
-        <span>Пристроїв онлайн: {{ online_count }}</span>
-      </div>
-      <div class="status-item">
-        <div class="status-indicator status-offline"></div>
-        <span>Пристроїв офлайн: {{ offline_count }}</span>
-      </div>
+        <div class="status-item">
+            <span class="status-indicator status-online"></span>
+            <span>Онлайн: <span id="online-count">{{ online_count or 0 }}</span></span>
+        </div>
+        <div class="status-item">
+            <span class="status-indicator status-offline"></span>
+            <span>Офлайн: <span id="offline-count">{{ offline_count or 0 }}</span></span>
+        </div>
+        <div class="status-item">
+            <i class="fas fa-server"></i>
+            <span>Всього: <span id="total-count">{{ total_count or 0 }}</span></span>
+        </div>
     </div>
-  </div>
-
-  <div class="system-info">
-    <h2>Список пристроїв</h2>
-    <div class="devices-list">
-      {% for device in devices %}
-        <a href="/device/{{ device.ip }}" class="device-item">
-          <div class="info-item">
-            <div class="info-label">IP адреса</div>
-            <div class="info-value">{{ device.ip }}</div>
-          </div>
-          <div class="info-item">
-            <div class="info-label">Назва</div>
-            <div class="info-value">{{ device.status }}</div>
-          </div>
-          <div class="info-item">
-            <div class="info-label">Модель</div>
-            <div class="info-value"></div>
-          </div>
-{#          <div class="info-item">#}
-{#            <div class="info-label">Активні порти</div>#}
-{#            <div class="info-value">#}
-{#              {% set active_ports = device.interfaces.values() | selectattr("oper_status", "equalto", 1) | list %}#}
-{#              {{ active_ports | length }}/{{ device.interfaces | length }}#}
-{#            </div>#}
-{#          </div>#}
-          <div class="status-indicator {% if device.alive %}status-online{% else %}status-offline{% endif %}"></div>
-        </a>
-      {% endfor %}
-    </div>
-  </div>
-
-  <div class="last-update">
-    Оновлено: {{ last_update }}
-  </div>
 </div>
-</body>
-</html>
+
+<div id="equipment-list">
+    {% for device in devices %}
+    <div class="equipment-card" onclick="window.location.href='/device/{{ device.ip }}'">
+        <div class="card-header">
+            <h3><i class="fas fa-laptop-code"></i> {{ device.name }}</h3>
+            <span class="status-icon {{ 'online' if device.alive else 'offline' }}">
+                <i class="fas {{ 'fa-circle-check' if device.alive else 'fa-circle-xmark' }}"></i>
+            </span>
+        </div>
+        <div class="card-body">
+            <p><i class="fas fa-network-wired"></i> IP: {{ device.ip }}</p>
+            <p><i class="far fa-clock"></i> {{ device.timestamp }}</p>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<div id="loading" class="loading" style="display: none;">
+    <div class="spinner"></div>
+    <div>Оновлення даних...</div>
+</div>
+{% endblock %}
+
+{% block page_scripts %}
+<script>
+function startAutoRefresh() {
+    // Оновлюємо одразу при завантаженні
+    fetchData();
+
+    // Встановлюємо інтервал оновлення (наприклад, кожні 15 секунд)
+    refreshInterval = setInterval(fetchData, 10000);
+}
+
+function fetchData() {
+    const loadingIndicator = document.getElementById('loading');
+    loadingIndicator.style.display = 'flex';
+
+    fetch('/api/devices')
+        .then(response => response.json())
+        .then(data => {
+            updateDeviceList(data.devices);
+            updateCounters(data);
+        })
+        .catch(error => {
+            console.error('Помилка завантаження даних:', error);
+            // Тут можна показати помилку користувачу
+        })
+        .finally(() => {
+            loadingIndicator.style.display = 'none';
+        });
+}
+
+function updateDeviceList(devices) {
+    const equipmentList = document.getElementById('equipment-list');
+    equipmentList.innerHTML = '';
+
+    if (devices.length === 0) {
+        equipmentList.innerHTML = `<p class="empty-state">Пристрої не знайдено.</p>`;
+        return;
+    }
+
+    devices.forEach(device => {
+        const card = document.createElement('div');
+        card.className = 'equipment-card';
+        card.onclick = () => window.location.href = `/device/${device.ip}`;
+
+        const isOnline = device.alive;
+        const statusIcon = isOnline ? 'fa-circle-check' : 'fa-circle-xmark';
+        const statusClass = isOnline ? 'online' : 'offline';
+
+        card.innerHTML = `
+            <div class="card-header">
+                <h3><i class="fas fa-laptop-code"></i> ${device.name}</h3>
+                <span class="status-icon ${statusClass}">
+                    <i class="fas ${statusIcon}"></i>
+                </span>
+            </div>
+            <div class="card-body">
+                <p><i class="fas fa-network-wired"></i> IP: ${device.ip}</p>
+                <p><i class="far fa-clock"></i> ${device.timestamp}</p>
+            </div>
+        `;
+        equipmentList.appendChild(card);
+    });
+}
+
+function updateCounters(data) {
+    document.getElementById('online-count').textContent = data.online_count || 0;
+    document.getElementById('offline-count').textContent = data.offline_count || 0;
+    document.getElementById('total-count').textContent = data.total_count || 0;
+}
+</script>
+{% endblock %}

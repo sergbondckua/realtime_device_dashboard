@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime
+from typing import Dict, Any
 
 from flask import Flask, jsonify
 from flask_cors import CORS
@@ -22,50 +23,72 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# Фільтри для Jinja2
-@app.template_filter("format_bytes")
-def format_bytes_filter(value):
-    if value >= 10**9:
-        return f"{value / 10**9:.2f} GB"
-    elif value >= 10**6:
-        return f"{value / 10**6:.2f} MB"
-    elif value >= 10**3:
-        return f"{value / 10**3:.2f} KB"
-    return f"{value} B"
+@app.context_processor
+def inject_now():
+    return {"now": datetime.now()}
 
 
-@app.template_filter("format_packets")
-def format_packets_filter(value):
-    if value >= 10**6:
-        return f"{value / 10**6:.2f}M"
-    elif value >= 10**3:
-        return f"{value / 10**3:.1f}K"
-    return f"{value}"
+async def get_list_devices_data() -> Dict[str, Any]:
+    """Отримати дані про всі пристрої"""
+
+    # Отримання даних
+    devices = list(status.values())
+
+    # Оновлення timestamp
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for device in devices:
+        device["timestamp"] = current_time
+
+    online_count = sum(1 for device in devices if device["alive"])
+    offline_count = len(devices) - online_count
+
+    return {
+        "devices": devices,
+        "online_count": online_count,
+        "offline_count": offline_count,
+        "total_count": len(devices),
+        "timestamp": current_time,
+    }
 
 
-@app.template_filter("format_speed")
-def format_speed_filter(value):
-    if value >= 10**9:
-        return f"{value / 10**9:.1f} Gbps"
-    return f"{value / 10**6:.0f} Mbps"
+async def get_device_data(device_ip: str) -> Dict[str, Any]:
+    """Функція для отримання даних про пристрій"""
 
-
-async def get_devices_data() -> dict:
-    """Функція для отримання даних про пристрої"""
-    try:
-        # Перевірка наявності device_id в мапі IP-адрес
-        device_ip = DEVICES_IP_MAP[0][0]
-        if not device_ip:
-            return {}
-
-        # Ініціалізація комутатора з отриманою IP-адресою
-        switch = AsyncSwitchSNMP(device_ip)
-
-        return await switch.get_multiple_switches_stats(DEVICES_IP_MAP)
-    except Exception as e:
-        # Обробка винятків та повернення повідомлення про помилку з кодом 500
-        logger.error("Помилка при отриманні даних: %s", str(e))
+    # Знаходимо пристрій за IP
+    device = next(
+        (d for d in list(status.values()) if d["ip"] == device_ip), None
+    )
+    if not device:
         return {}
+
+    # Ініціалізація комутатора з отриманою IP-адресою
+    switch = AsyncSwitchSNMP(device_ip)
+    if not switch:
+        return {}
+
+    # Отримання статистики комутатора
+    stats, system_info = await asyncio.gather(
+        switch.get_interfaces_stats(), switch.get_system_info()
+    )
+
+    if device["alive"]:
+        return {
+            "device_ip": device_ip,
+            "device_name": device["name"],
+            "device_status": device["alive"],
+            "interfaces": stats,
+            "system_info": system_info,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    else:
+        return {
+            "device_ip": device_ip,
+            "device_name": device["name"],
+            "device_status": False,
+            "interfaces": None,
+            "system_info": None,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
 
 
 @app.route("/")
@@ -73,21 +96,20 @@ async def index():
     """Головна сторінка з HTML інтерфейсом"""
     try:
         # Перевірка наявності device_id в мапі IP-адрес
-        device_ip = DEVICES_IP_MAP[0][0]
+        device_ip = DEVICES_IP_MAP[0]["ip"]
         if not device_ip:
             return {}
 
-        devices_data = list(status.values())
-        online_count = sum(1 for device in devices_data if device["alive"])
-        offline_count = len(devices_data) - online_count
+        data = await get_list_devices_data()
 
         # Повернення даних у форматі JSON
         return render_template(
             "network_monitor/index.html",
-            devices=devices_data,
-            online_count=online_count,
-            offline_count=offline_count,
-            last_update=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            devices=data["devices"],
+            online_count=data["online_count"],
+            offline_count=data["offline_count"],
+            total_count=data["total_count"],
+            timestamp=data["timestamp"],
         )
 
     except Exception as e:
@@ -97,53 +119,64 @@ async def index():
 
 
 # Сторінка деталей пристрою
-@app.route("/device/<ip>")
-async def device_details(ip):
-    switch = AsyncSwitchSNMP(ip)
-    if not switch:
-        return "Device not found", 404
+@app.route("/device/<device_ip>")
+async def device_detail(device_ip: str):
+    """Сторінка деталей конкретного пристрою"""
+    device_data = await get_device_data(device_ip)
 
-    # Отримання статистики комутатора
-    stats, system_info = await asyncio.gather(
-        switch.get_interfaces_stats(), switch.get_system_info()
-    )
-    active_ports = [
-        iface for iface in stats.values() if iface.oper_status == 1
-    ]
+    if not device_data:
+        return (
+            render_template(
+                "network_monitor/error.html",
+                error_message=f"Пристрій з IP {device_ip} не знайдено",
+            ),
+            404,
+        )
 
     return render_template(
-        "network_monitor/device_details.html",
-        device_ip=ip,
-        system_info=system_info,
-        interfaces=stats,
-        active_ports_count=len(active_ports),
-        total_ports_count=len(stats),
-        last_update=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "network_monitor/device_details.html", **device_data
     )
 
 
-@app.route("/api/devices/")
-async def get_devices():
+@app.route("/api/devices")
+async def api_devices():
+    """API endpoint для отримання списку пристроїв (для AJAX)"""
     try:
-        # Перевірка наявності device_id в мапі IP-адрес
-        device_ip = DEVICES_IP_MAP[0][0]
-        if not device_ip:
-            return {}
-
-        devices_data = {}
-        for device in DEVICES_IP_MAP:
-            switch = AsyncSwitchSNMP(*device)
-            devices_data[device[0]] = dict(
-                system_info=await switch.get_system_info()
-            )
+        data = await get_list_devices_data()
+        return jsonify(data)
     except Exception as e:
-        # Обробка винятків та повернення повідомлення про помилку з кодом 500
         logger.error("Помилка при отриманні даних: %s", str(e))
-        return jsonify({"error": f"Внутрішня помилка сервера: {str(e)}"}), 500
-    return jsonify(devices_data)
+        return (
+            jsonify(
+                {
+                    "error": str(e),
+                    "devices": [],
+                    "online_count": 0,
+                    "offline_count": 0,
+                    "total_count": 0,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            ),
+            500,
+        )
 
 
-@app.route("/api/devices/stats", methods=["GET"])
+@app.route("/api/device/<device_ip>")
+async def api_device_detail(device_ip: str):
+    """API endpoint для отримання деталей пристрою (для AJAX)"""
+    try:
+        device_data = await get_device_data(device_ip)
+        if not device_data:
+            return (
+                jsonify({"error": f"Пристрій з IP {device_ip} не знайдено"}),
+                404,
+            )
+        return jsonify(device_data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/devices/all", methods=["GET"])
 async def get_devices_stats():
     """
     Отримання інформації про порти комутатора за його ID.
@@ -154,7 +187,7 @@ async def get_devices_stats():
 
     try:
         # Перевірка наявності device_id в мапі IP-адрес
-        device_ip = DEVICES_IP_MAP[0][0]
+        device_ip = DEVICES_IP_MAP[0]["ip"]
         if not device_ip:
             return (
                 jsonify({"error": f"Пристрій не знайдено."}),
@@ -178,25 +211,25 @@ async def get_devices_stats():
         return jsonify({"error": f"Внутрішня помилка сервера: {str(e)}"}), 500
 
 
-@app.route("/api/device/stats/<device_ip>", methods=["GET"])
-async def get_device_stats(device_ip):
-    try:
-        # Ініціалізація комутатора з отриманою IP-адресою
-        switch = AsyncSwitchSNMP(device_ip)
+@app.errorhandler(404)
+def not_found(error):
+    return (
+        render_template(
+            "network_monitor/error.html", error_message="Сторінка не знайдена"
+        ),
+        404,
+    )
 
-        # Отримання статистики комутатора
-        stats, system_info = await asyncio.gather(
-            switch.get_interfaces_stats(), switch.get_system_info()
-        )
 
-        # Повернення статистики у форматі JSON
-        return jsonify(system_info=system_info, interfaces=stats)
-
-    except Exception as e:
-        # Обробка винятків та повернення повідомлення про помилку з кодом 500
-        # Логування помилки тут було б доречним.
-        logger.error("Помилка при отриманні даних: %s", str(e))
-        return jsonify({"error": f"Внутрішня помилка сервера: {str(e)}"}), 500
+@app.errorhandler(500)
+def internal_error(error):
+    return (
+        render_template(
+            "network_monitor/error.html",
+            error_message="Внутрішня помилка сервера",
+        ),
+        500,
+    )
 
 
 if __name__ == "__main__":

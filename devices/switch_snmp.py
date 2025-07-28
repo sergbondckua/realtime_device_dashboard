@@ -51,7 +51,9 @@ class SNMPConfig:
     # Обмеження
     MAX_PHYSICAL_INTERFACES: int = 48
     MAX_RETRIES: int = 3
-    MAX_CONCURRENT_REQUESTS: int = 10  # Максимум одночасних запитів
+    USE_BULK: bool = True  # Використовувати bulk-операції
+    BULK_SIZE: int = 20  # Кількість значень у bulk-запиті
+    MAX_CONCURRENT_INTERFACES: int = 20  # Макс. паралельних запитів
 
     # Підтримувані версії SNMP
     SUPPORTED_VERSIONS: tuple = ("1", "2c")
@@ -239,7 +241,7 @@ class AsyncSwitchSNMP:
         self.version = version
         self.config = SNMPConfig()
         self._semaphore = asyncio.Semaphore(
-            self.config.MAX_CONCURRENT_REQUESTS
+            self.config.MAX_CONCURRENT_INTERFACES
         )
         self._is_snmp_available = None  # Кешування результату
 
@@ -318,16 +320,11 @@ class AsyncSwitchSNMP:
 
     @async_retry(max_retries=SNMPConfig.MAX_RETRIES, delay=1.0)
     async def get_interfaces_stats(self) -> Dict[int, InterfaceStats]:
-        """
-        Асинхронно отримує статистику всіх інтерфейсів комутатора через SNMP
+        """Асинхронно отримує статистику з використанням bulk-операцій"""
 
-        Returns:
-            Словник зі статистикою інтерфейсів, де ключ - індекс інтерфейсу,
-            значення - об'єкт InterfaceStats
-        """
         if not await self._check_snmp_availability():
             logger.error(
-                "Спроба отримати статистику при відсутніх SNMP інструментах"
+                "Спроба отримати інформацію про систему при відсутніх SNMP інструментах"
             )
             return {}
 
@@ -335,89 +332,75 @@ class AsyncSwitchSNMP:
             # Отримуємо індекси інтерфейсів
             if_indexes = await self._get_interface_indexes()
             if not if_indexes:
-                logger.warning("Не знайдено жодного інтерфейсу")
                 return {}
 
-            # Список всіх OID для збору даних
-            target_oids = [
-                self.OID_IF_DESCR,
-                self.OID_IF_ALIAS,
-                self.OID_IF_SPEED,
-                self.OID_IF_IN_OCTETS,
-                self.OID_IF_OUT_OCTETS,
-                self.OID_IF_IN_PKTS,
-                self.OID_IF_OUT_PKTS,
-                self.OID_IF_IN_ERRORS,
-                self.OID_IF_OUT_ERRORS,
-                self.OID_IF_STATUS,
-                self.OID_IF_ADMIN_STATUS,
+            # Отримуємо всі дані за один паралельний запит
+            oid_tasks = [
+                self._snmp_walk(self.OID_IF_DESCR),
+                self._snmp_walk(self.OID_IF_ALIAS),
+                self._snmp_walk(self.OID_IF_SPEED),
+                self._snmp_walk(self.OID_IF_IN_OCTETS),
+                self._snmp_walk(self.OID_IF_OUT_OCTETS),
+                self._snmp_walk(self.OID_IF_IN_PKTS),
+                self._snmp_walk(self.OID_IF_OUT_PKTS),
+                self._snmp_walk(self.OID_IF_IN_ERRORS),
+                self._snmp_walk(self.OID_IF_OUT_ERRORS),
+                self._snmp_walk(self.OID_IF_STATUS),
+                self._snmp_walk(self.OID_IF_ADMIN_STATUS),
             ]
 
-            # Паралельно збираємо всі дані
-            logger.debug(
-                "Початок паралельного збору даних для %d OID", len(target_oids)
+            # Виконуємо всі запити паралельно
+            results = await asyncio.gather(*oid_tasks)
+
+            # Розпаковуємо результати
+            (
+                descr_data,
+                alias_data,
+                speed_data,
+                in_octets_data,
+                out_octets_data,
+                in_pkts_data,
+                out_pkts_data,
+                in_errors_data,
+                out_errors_data,
+                status_data,
+                admin_status_data,
+            ) = results
+
+            # Створюємо обмежений семафор для паралельної обробки інтерфейсів
+            semaphore = asyncio.Semaphore(
+                self.config.MAX_CONCURRENT_INTERFACES
             )
-            start_time = asyncio.get_event_loop().time()
 
-            oid_tasks = [self._snmp_walk(oid) for oid in target_oids]
-            oid_results = await asyncio.gather(*oid_tasks)
+            async def process_interface(index):
+                """Обробка даних для одного інтерфейсу"""
+                async with semaphore:
+                    return InterfaceStats(
+                        index=index,
+                        name=descr_data.get(index, ""),
+                        alias=alias_data.get(index, ""),
+                        speed=self._safe_int(speed_data.get(index)),
+                        in_octets=self._safe_int(in_octets_data.get(index)),
+                        out_octets=self._safe_int(out_octets_data.get(index)),
+                        in_pkts=self._safe_int(in_pkts_data.get(index)),
+                        out_pkts=self._safe_int(out_pkts_data.get(index)),
+                        in_errors=self._safe_int(in_errors_data.get(index)),
+                        out_errors=self._safe_int(out_errors_data.get(index)),
+                        admin_status=self._safe_int(
+                            admin_status_data.get(index)
+                        ),
+                        oper_status=self._safe_int(status_data.get(index)),
+                    )
 
-            end_time = asyncio.get_event_loop().time()
-            logger.debug(
-                "Паралельний збір даних завершено за %s.2f секунди",
-                end_time - start_time,
-            )
+            # Паралельна обробка всіх інтерфейсів
+            tasks = [process_interface(i) for i in if_indexes]
+            interfaces_list = await asyncio.gather(*tasks)
 
-            # Створюємо словник результатів
-            oid_data = dict(zip(target_oids, oid_results))
-
-            # Формуємо результат для кожного інтерфейсу
-            interfaces = {}
-            for index in if_indexes:
-                interfaces[index] = InterfaceStats(
-                    index=index,
-                    name=oid_data[self.OID_IF_DESCR].get(index, ""),
-                    alias=oid_data[self.OID_IF_ALIAS].get(index, ""),
-                    speed=self._safe_int(
-                        oid_data[self.OID_IF_SPEED].get(index, "")
-                    ),
-                    in_octets=self._safe_int(
-                        oid_data[self.OID_IF_IN_OCTETS].get(index)
-                    ),
-                    out_octets=self._safe_int(
-                        oid_data[self.OID_IF_OUT_OCTETS].get(index)
-                    ),
-                    in_pkts=self._safe_int(
-                        oid_data[self.OID_IF_IN_PKTS].get(index)
-                    ),
-                    out_pkts=self._safe_int(
-                        oid_data[self.OID_IF_OUT_PKTS].get(index)
-                    ),
-                    in_errors=self._safe_int(
-                        oid_data[self.OID_IF_IN_ERRORS].get(index)
-                    ),
-                    out_errors=self._safe_int(
-                        oid_data[self.OID_IF_OUT_ERRORS].get(index)
-                    ),
-                    admin_status=self._safe_int(
-                        oid_data[self.OID_IF_ADMIN_STATUS].get(index)
-                    ),
-                    oper_status=self._safe_int(
-                        oid_data[self.OID_IF_STATUS].get(index)
-                    ),
-                )
-
-            logger.info(
-                "Отримано статистику для %d інтерфейсів", len(interfaces)
-            )
-            return interfaces
+            # Формуємо словник результатів
+            return {iface.index: iface for iface in interfaces_list}
 
         except Exception as e:
-            logger.error(
-                "Критична помилка при отриманні статистики: %s",
-                e,
-                exc_info=True,
-            )
+            logger.error("Помилка отримання статистики: %s", e)
             return {}
 
     async def _get_interface_indexes(self) -> List[int]:
@@ -442,7 +425,7 @@ class AsyncSwitchSNMP:
 
     async def _snmp_walk(self, base_oid: str) -> Dict[int, str]:
         """
-        Асинхронно виконує SNMP walk для вказаного базового OID і повертає результати
+        Асинхронно виконує SNMP walk з підтримкою bulk-операцій
 
         Args:
             base_oid: Базовий OID для walk
@@ -450,19 +433,26 @@ class AsyncSwitchSNMP:
         Returns:
             Словник {index: value} для всіх знайдених інстансів
         """
-        async with self._semaphore:  # Обмежуємо кількість одночасних запитів
+        async with self._semaphore:
             try:
-                # Створюємо процес асинхронно
-                proc = await asyncio.create_subprocess_exec(
-                    "snmpwalk",
+                command_args = [
+                    "snmpbulkwalk" if self.config.USE_BULK else "snmpwalk",
                     "-v",
                     self.version,
                     "-c",
                     self.community,
-                    "-OQ",  # Тільки OID та значення
-                    "-On",  # Числовий формат
+                    "-OQ",
+                    "-On",
                     self.host,
                     base_oid,
+                ]
+
+                # Додаємо параметри для bulk запитів
+                if self.config.USE_BULK:
+                    command_args.extend([f"-Cr{str(self.config.BULK_SIZE)}"])
+
+                proc = await asyncio.create_subprocess_exec(
+                    *command_args,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -583,7 +573,8 @@ class AsyncSwitchSNMP:
         return results
 
     @staticmethod
-    async def get_multiple_switches_stats(switches_config: List[Tuple[str, str, str]]
+    async def get_multiple_switches_stats(
+        switches_config: List[Dict[str, str]],
     ) -> Dict[str, Dict[int, InterfaceStats]]:
         """
         Асинхронно отримує статистику з кількох комутаторів паралельно
@@ -598,11 +589,13 @@ class AsyncSwitchSNMP:
         hosts = []
         system_info = []
 
-        for host, community, version in switches_config:
-            switch = AsyncSwitchSNMP(host, community, version)
+        for data in switches_config:
+            switch = AsyncSwitchSNMP(
+                data["ip"], data["community"], data["version"]
+            )
             tasks.append(switch.get_interfaces_stats())
             system_info.append(switch.get_system_info())
-            hosts.append(host)
+            hosts.append(data["ip"])
 
         logger.info(
             "Початок паралельного збору даних з %d комутаторів",

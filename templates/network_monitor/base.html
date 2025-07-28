@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Моніторинг мережі{% endblock %}</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='network_monitor/css/style.css') }}">
+</head>
+<body>
+    {% block sidebar %}
+    {% include 'network_monitor/sidebar.html' %}
+    {% endblock %}
+
+    <div class="main-content">
+        <main class="content-area">
+            {% block content %}{% endblock %}
+        </main>
+
+        <footer class="footer">
+            <p>&copy; {{ now.year }} NetWatch Monitor. Всі права захищено.</p>
+        </footer>
+    </div>
+
+    <script>
+        let refreshInterval;
+        document.addEventListener('DOMContentLoaded', function() {
+            if (typeof startAutoRefresh === 'function') {
+                startAutoRefresh();
+            }
+        });
+    </script>
+
+    {% block page_scripts %}{% endblock %}
+</body>
+</html>
