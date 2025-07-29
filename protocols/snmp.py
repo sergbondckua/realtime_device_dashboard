@@ -683,7 +683,7 @@ async def main():
         switches_config = [
             {
                 "name": "Office Fregat",
-                "ip": "172.24.145.145",
+                "ip": "192.162.109.100",
                 "community": "public",
                 "version": "2c",
             },

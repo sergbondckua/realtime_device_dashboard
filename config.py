@@ -1,7 +1,7 @@
 DEVICES_IP_MAP = [
     {
         "name": "Office Fregat",
-        "ip": "172.24.135.17",
+        "ip": "172.24.72.93",
         "community": "public",
         "version": "2c",
     },
@@ -17,8 +17,8 @@ DEVICES_IP_MAP = [
         "community": "public",
         "version": "2c",
     },{
-        "name": "Router Stand",
-        "ip": "192.168.5.20",
+        "name": "Router School No26",
+        "ip": "192.162.09.00",
         "community": "public",
         "version": "2c",
     },

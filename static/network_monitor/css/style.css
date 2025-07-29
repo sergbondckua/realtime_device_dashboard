@@ -289,6 +289,10 @@ i {
     background-color: var(--bg-color);
     border-radius: 6px;
     font-size: 14px;
+    position: relative;
+    overflow: visible;
+    z-index: 1;
+    transition: opacity 0.5s ease, transform 0.5s ease;
 }
 
 .interface-name {
@@ -392,7 +396,7 @@ i {
         flex-direction: column; /* Вертикальне розташування для мобільних */
     }
 
-    /* Сайдбар перетворюється на нижню панель навігації */
+    /* Сайдбар перетворюється на нижчу панель навігації */
     .sidebar {
         width: 100%;
         height: var(--mobile-nav-height);
@@ -487,6 +491,7 @@ i {
         padding: 15px;
     }
 }
+
 /* Стилі для фільтра портів */
 .port-filter {
     display: flex;
@@ -513,4 +518,83 @@ i {
     background-color: var(--primary-color);
     color: var(--bg-color);
     border-color: var(--primary-color);
+}
+
+/* Додаємо стилі для favicon */
+link[rel="icon"] {
+    font-size: 24px; /* Розмір іконки */
+    text-align: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Для кращої підтримки на різних пристроях */
+@media (prefers-color-scheme: dark) {
+    link[rel="icon"] {
+        filter: invert(1) hue-rotate(180deg); /* Інвертуємо кольори для темної теми */
+    }
+}
+
+/* Анімації для активних портів */
+@keyframes blink {
+    0% { opacity: 1; }
+    50% { opacity: 0.7; }
+    100% { opacity: 1; }
+}
+
+@keyframes pulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(122, 162, 247, 0.4);
+        opacity: 0.7;
+    }
+    70% {
+        box-shadow: 0 0 0 10px rgba(122, 162, 247, 0);
+        opacity: 0;
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(122, 162, 247, 0);
+        opacity: 0;
+    }
+}
+
+@keyframes colorChange {
+    0% { color: var(--primary-color); }
+    50% { color: #ffcc00; }
+    100% { color: var(--primary-color); }
+}
+
+.active-port {
+    animation: blink 1.5s infinite;
+    position: relative;
+}
+
+.active-port::before {
+    content: "";
+    position: absolute;
+    top: -2px;
+    left: -2px;
+    right: -2px;
+    bottom: -2px;
+    border-radius: 8px;
+    background: rgba(122, 162, 247, 0.2);
+    z-index: -1;
+    animation: pulse 2s infinite;
+}
+
+.active-icon {
+    color: var(--primary-color);
+    font-size: 14px;
+    animation: colorChange 2s infinite;
+}
+
+/* Для мобільних пристроїв зменшимо анімацію */
+@media (max-width: 768px) {
+    .active-port {
+        animation: blink 2s infinite;
+    }
+
+    .active-port::before {
+        display: none;
+    }
 }

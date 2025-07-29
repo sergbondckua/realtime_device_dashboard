@@ -8,7 +8,8 @@ from flask_cors import CORS
 from flask import render_template
 
 from config import DEVICES_IP_MAP
-from devices.switch_snmp import AsyncSwitchSNMP
+from protocols.api import get_ros
+from protocols.snmp import AsyncSwitchSNMP
 from monitor.devices import start_monitoring, status
 
 app = Flask(__name__)
@@ -212,11 +213,23 @@ async def get_devices_stats():
         return jsonify({"error": f"Внутрішня помилка сервера: {str(e)}"}), 500
 
 
+@app.route("/api/ros")
+async def get_ros_data():
+    try:
+        data = await get_ros()
+        print(data)
+        return jsonify(data)
+    except Exception as e:
+        logger.error("Помилка при отриманні даних: %s", str(e))
+        return jsonify({"error": str(e)}), 500
+
+
 @app.errorhandler(404)
 def not_found(error):
     return (
         render_template(
-            "network_monitor/error.html", error_message="Сторінка не знайдена"
+            "network_monitor/error.html",
+            error_message=f"Сторінка не знайдена, {error}",
         ),
         404,
     )
@@ -227,7 +240,7 @@ def internal_error(error):
     return (
         render_template(
             "network_monitor/error.html",
-            error_message="Внутрішня помилка сервера",
+            error_message=f"Внутрішня помилка сервера, {error}",
         ),
         500,
     )
