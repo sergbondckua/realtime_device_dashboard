@@ -639,7 +639,7 @@ async def main():
     """Основна асинхронна функція"""
     try:
         # Ініціалізація комутатора
-        switch = AsyncSwitchSNMP("192.168.5.20", "public", "2c")
+        switch = AsyncSwitchSNMP("172.24.145.145", "public", "2c")
 
         # Паралельно отримуємо системну інформацію та статистику інтерфейсів
         logger.info("Початок паралельного збору даних...")
@@ -681,9 +681,12 @@ async def main():
         # Приклад роботи з кількома комутаторами
         print("\n--- Тест з кількома комутаторами ---")
         switches_config = [
-            ("172.24.145.145", "public", "2c"),
-            ("192.168.5.1", "public", "2c"),  # Додайте більше комутаторів
-            ("192.168.5.11", "public", "2c"),  # Додайте більше комутаторів
+            {
+                "name": "Office Fregat",
+                "ip": "172.24.145.145",
+                "community": "public",
+                "version": "2c",
+            },
         ]
 
         multi_results = await switch.get_multiple_switches_stats(

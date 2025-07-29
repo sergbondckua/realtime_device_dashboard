@@ -58,6 +58,7 @@ async def get_device_data(device_ip: str) -> Dict[str, Any]:
     device = next(
         (d for d in list(status.values()) if d["ip"] == device_ip), None
     )
+
     if not device:
         return {}
 
