@@ -217,7 +217,7 @@ async def get_devices_stats():
 async def get_ros_data():
     try:
         data = await get_ros()
-        print(data)
+
         return jsonify(data)
     except Exception as e:
         logger.error("Помилка при отриманні даних: %s", str(e))
