@@ -80,7 +80,7 @@
               <div class="interface-details">
                 <span>{{ interface.alias or '' }}</span>
                 <span class="speed"><i
-                    class="fas fa-gauge-high"></i> {{ (interface.speed / 1000000)|int if interface.speed else 0 }} Mbps</span>
+                    class="fas fa-gauge-high"></i> {{ interface.speed|human_speed }}</span>
               </div>
               <div class="interface-status">
                 <span
@@ -89,9 +89,9 @@
                     class="status-tag {{ 'status-up' if interface.oper_status == 1 else 'status-down' }}">Port: {{ 'UP' if interface.oper_status == 1 else 'DOWN' }}</span>
               </div>
               <div class="interface-traffic">
-                <div><i class="fas fa-arrow-down"></i> {{ "%.2f"|format((interface.in_octets or 0) / 1024 / 1024) }} MB
+                <div><i class="fas fa-arrow-down red"></i> {{ "%.2f"|format((interface.in_octets or 0) / 1024 / 1024) }} MB
                 </div>
-                <div><i class="fas fa-arrow-up"></i> {{ "%.2f"|format((interface.out_octets or 0) / 1024 / 1024) }} MB
+                <div><i class="fas fa-arrow-up green"></i> {{ "%.2f"|format((interface.out_octets or 0) / 1024 / 1024) }} MB
                 </div>
               </div>
               {% if interface.in_errors or interface.out_errors %}
@@ -113,7 +113,6 @@
 {% endblock %}
 
 {% block page_scripts %}
-  <script src="{{ url_for('static', filename='script.js') }}"></script>
   <script>
       const deviceIp = "{{ device_ip }}";
       document.addEventListener('DOMContentLoaded', function() {

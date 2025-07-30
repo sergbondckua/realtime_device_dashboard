@@ -1,4 +1,4 @@
-const DeviceMonitor = (function() {
+const DeviceMonitor = (function () {
     let currentFilter = 'all';
     let refreshInterval;
 
@@ -95,6 +95,14 @@ const DeviceMonitor = (function() {
         });
     }
 
+    function humanSpeed(speed) {
+        if (!speed || speed <= 0) return "0";
+        if (speed >= 1_000_000_000) return `${Math.floor(speed / 1_000_000_000)} Gbps`;
+        if (speed >= 1_000_000) return `${Math.floor(speed / 1_000_000)} Mbps`;
+        if (speed >= 1_000) return `${Math.floor(speed / 1_000)} kbps`;
+        return `${speed} bps`;
+    }
+
     function generateDeviceContent(data) {
         if (!data.device_status) {
             return `
@@ -137,7 +145,7 @@ const DeviceMonitor = (function() {
                     '<i class="fas fa-bolt active-icon"></i>' :
                     iface.index;
 
-                const speedMbps = iface.speed ? Math.floor(iface.speed / 1000000) : 0;
+                const speedMbps = humanSpeed(iface.speed);
                 const inMB = ((iface.in_octets || 0) / 1024 / 1024).toFixed(2);
                 const outMB = ((iface.out_octets || 0) / 1024 / 1024).toFixed(2);
                 const adminUp = iface.admin_status === 1;
@@ -151,14 +159,14 @@ const DeviceMonitor = (function() {
                 interfacesHtml += `
             <div class="interface-row ${portClass}">
                 <div class="interface-name"><span class="port-index">${portIndex}</span> ${iface.name}</div>
-                <div class="interface-details"><span>${iface.alias || ''}</span> <span class="speed"><i class="fas fa-gauge-high"></i> ${speedMbps} Mbps</span></div>
+                <div class="interface-details"><span>${iface.alias || ''}</span> <span class="speed"><i class="fas fa-gauge-high"></i> ${speedMbps}</span></div>
                 <div class="interface-status">
                     <span class="status-tag ${adminUp ? 'status-up' : 'status-down'}">Admin: ${adminUp ? 'UP' : 'DOWN'}</span>
                     <span class="status-tag ${operUp ? 'status-up' : 'status-down'}">Port: ${operUp ? 'UP' : 'DOWN'}</span>
                 </div>
                 <div class="interface-traffic">
-                    <div><i class="fas fa-arrow-down"></i> ${inMB} MB</div>
-                    <div><i class="fas fa-arrow-up"></i> ${outMB} MB</div>
+                    <div><i class="fas fa-arrow-down red"></i> ${inMB} MB</div>
+                    <div><i class="fas fa-arrow-up green"></i> ${outMB} MB</div>
                 </div>
                 ${errorsHtml}
             </div>`;

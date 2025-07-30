@@ -3,6 +3,8 @@ import logging
 from datetime import datetime
 from typing import Dict, Any
 
+import ros_api
+from environs import Env
 from flask import Flask, jsonify
 from flask_cors import CORS
 from flask import render_template
@@ -14,7 +16,13 @@ from monitor.devices import start_monitoring, status
 
 app = Flask(__name__)
 CORS(app)
+
+# Прочитайте змінні середовища
+env = Env()
+env.read_env()
+
 start_monitoring()
+router = ros_api.Api(*env.list("ROOT_ROUTER"))
 
 # Налаштування логування
 logging.basicConfig(
@@ -140,6 +148,55 @@ async def device_detail(device_ip: str):
     )
 
 
+@app.route("/ros-control")
+async def ros_control_page():
+    """Сторінка управління RouterOS Provisioning"""
+    try:
+        # Перевіряємо поточний стан для обох інтерфейсів
+        current_config = router.talk("/interface/wifi/provisioning/print")
+
+        # Визначаємо чи увімкнено provisioning для кожного інтерфейсу
+        interface_0_enabled = False
+        interface_1_enabled = False
+        interface_0_config = ""
+        interface_1_config = ""
+
+        if current_config:
+            for item in current_config:
+                if item.get("master-configuration") == "cfg-2-staff-N":
+                    interface_0_config = item.get("slave-configurations", "")
+                    interface_0_enabled = bool(interface_0_config)
+                elif item.get("master-configuration") == "cfg-5-staff-AC":
+                    interface_1_config = item.get("slave-configurations", "")
+                    interface_1_enabled = bool(interface_1_config)
+
+        # Загальний статус - обидва інтерфейси повинні бути увімкнені
+        is_enabled = interface_0_enabled and interface_1_enabled
+
+        return render_template(
+            "network_monitor/ros_control.html",
+            is_enabled=is_enabled,
+            interface_0_enabled=interface_0_enabled,
+            interface_1_enabled=interface_1_enabled,
+            interface_0_config=interface_0_config,
+            interface_1_config=interface_1_config,
+            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+    except Exception as e:
+        logger.error("Помилка при отриманні стану RouterOS: %s", str(e), exc_info=True)
+        return render_template(
+            "network_monitor/ros_control.html",
+            is_enabled=False,
+            interface_0_enabled=False,
+            interface_1_enabled=False,
+            interface_0_config="",
+            interface_1_config="",
+            error=str(e),
+            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+
 @app.route("/api/devices")
 async def api_devices():
     """API endpoint для отримання списку пристроїв (для AJAX)"""
@@ -213,15 +270,188 @@ async def get_devices_stats():
         return jsonify({"error": f"Внутрішня помилка сервера: {str(e)}"}), 500
 
 
-@app.route("/api/ros")
-async def get_ros_data():
+@app.route("/api/ros/provisioning/enable", methods=["POST"])
+async def enable_provisioning():
+    """API для вмикання WiFi Provisioning"""
     try:
-        data = await get_ros()
+        # Вмикаємо provisioning для обох інтерфейсів
+        result1 = router.talk(
+            "/interface/wifi/provisioning/set\n=numbers=0\n=slave-configurations=cfg-2-free-N"
+        )
+        result2 = router.talk(
+            "/interface/wifi/provisioning/set\n=numbers=1\n=slave-configurations=cfg-5-free-AC"
+        )
 
-        return jsonify(data)
+        # Список всіх Remote Cap інтерфейсів
+        remote_cap_interfaces = router.talk(
+            "/interface/wifi/capsman/remote-cap/print"
+        )
+
+        # Виконуємо provision-all для Remote Cap
+        for interface in remote_cap_interfaces:
+            id_iface = interface[".id"]
+            router.talk(
+                f"/interface/wifi/capsman/remote-cap/provision\n=.id={id_iface}"
+            )
+
+        logger.info(
+            "WiFi Provisioning увімкнено для обох інтерфейсів та виконано provision-all"
+        )
+
+        return jsonify(
+            {
+                "success": True,
+                "message": "WiFi Provisioning успішно увімкнено для обох інтерфейсів",
+                "status": "enabled",
+                "details": {
+                    "interface_0": "cfg-2-free-N",
+                    "interface_1": "cfg-5-free-AC",
+                    "provision_all": "executed",
+                },
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
+
     except Exception as e:
-        logger.error("Помилка при отриманні даних: %s", str(e))
-        return jsonify({"error": str(e)}), 500
+        logger.error("Помилка при вмиканні provisioning: %s", str(e))
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "message": f"Помилка при вмиканні: {str(e)}",
+                    "status": "error",
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            ),
+            500,
+        )
+
+
+@app.route("/api/ros/provisioning/disable", methods=["POST"])
+async def disable_provisioning():
+    """API для вимикання WiFi Provisioning"""
+    try:
+        # Вимикаємо provisioning для обох інтерфейсів
+        result1 = router.talk(
+            "/interface/wifi/provisioning/set\n=numbers=0\n=slave-configurations="
+        )
+        result2 = router.talk(
+            "/interface/wifi/provisioning/set\n=numbers=1\n=slave-configurations="
+        )
+
+        # Список всіх Remote Cap інтерфейсів
+        remote_cap_interfaces = router.talk(
+            "/interface/wifi/capsman/remote-cap/print"
+        )
+
+        # Виконуємо provision-all для Remote Cap
+        for interface in remote_cap_interfaces:
+            id_iface = interface[".id"]
+            router.talk(
+                f"/interface/wifi/capsman/remote-cap/provision\n=.id={id_iface}"
+            )
+
+        logger.info(
+            "WiFi Provisioning вимкнено для обох інтерфейсів та виконано provision-all"
+        )
+
+        return jsonify(
+            {
+                "success": True,
+                "message": "WiFi Provisioning успішно вимкнено для обох інтерфейсів",
+                "status": "disabled",
+                "details": {
+                    "interface_0": "disabled",
+                    "interface_1": "disabled",
+                    "provision_all": "executed",
+                },
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
+
+    except Exception as e:
+        logger.error("Помилка при вимиканні provisioning: %s", str(e))
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "message": f"Помилка при вимиканні: {str(e)}",
+                    "status": "error",
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            ),
+            500,
+        )
+
+
+@app.route("/api/ros/provisioning/status", methods=["GET"])
+async def get_provisioning_status():
+    """API для отримання поточного стану provisioning"""
+    try:
+        # Отримуємо поточну конфігурацію
+        current_config = router.talk("/interface/wifi/provisioning/print")
+
+        interface_0_enabled = False
+        interface_1_enabled = False
+        interface_0_config = ""
+        interface_1_config = ""
+        config_details = []
+
+        if current_config:
+            for item in current_config:
+                config_details.append(item)
+                if "numbers" in item:
+                    if (
+                        item["numbers"] == "0"
+                        and "slave-configurations" in item
+                    ):
+                        interface_0_config = item.get(
+                            "slave-configurations", ""
+                        )
+                        interface_0_enabled = bool(interface_0_config)
+                    elif (
+                        item["numbers"] == "1"
+                        and "slave-configurations" in item
+                    ):
+                        interface_1_config = item.get(
+                            "slave-configurations", ""
+                        )
+                        interface_1_enabled = bool(interface_1_config)
+
+        # Загальний статус
+        is_enabled = interface_0_enabled and interface_1_enabled
+
+        return jsonify(
+            {
+                "success": True,
+                "is_enabled": is_enabled,
+                "interfaces": {
+                    "interface_0": {
+                        "enabled": interface_0_enabled,
+                        "config": interface_0_config or "disabled",
+                    },
+                    "interface_1": {
+                        "enabled": interface_1_enabled,
+                        "config": interface_1_config or "disabled",
+                    },
+                },
+                "config_details": config_details,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
+
+    except Exception as e:
+        logger.error("Помилка при отриманні статусу: %s", str(e))
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "message": f"Помилка при отриманні статусу: {str(e)}",
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            ),
+            500,
+        )
 
 
 @app.errorhandler(404)
@@ -244,6 +474,22 @@ def internal_error(error):
         ),
         500,
     )
+
+
+@app.template_filter("human_speed")
+def human_speed(value):
+    try:
+        value = int(value)
+        if value >= 1_000_000_000:
+            return f"{value // 1_000_000_000} Gbps"
+        elif value >= 1_000_000:
+            return f"{value // 1_000_000} Mbps"
+        elif value >= 1_000:
+            return f"{value // 1_000} kbps"
+        else:
+            return f"{value} bps"
+    except:
+        return "0"
 
 
 if __name__ == "__main__":
