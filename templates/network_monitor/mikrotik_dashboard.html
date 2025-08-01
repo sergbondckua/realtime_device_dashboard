@@ -1,0 +1,169 @@
+{% extends "network_monitor/base.html" %}
+
+{% block title %}Моніторинг MikroTik: {{ device_name }}{% endblock %}
+
+{% block content %}
+<div class="header">
+    <h1><i class="fas fa-server"></i> Моніторинг MikroTik: {{ device_name }}</h1>
+    <div class="status-bar">
+        <div id="device-status-container" class="status-item">
+            </div>
+        <div class="status-item">
+            <i class="fas fa-network-wired"></i>
+            <span>{{ device_ip }}</span>
+        </div>
+         <div class="status-item">
+            <i class="far fa-clock"></i>
+            <span id="last-updated">{{ data.timestamp or 'N/A' }}</span>
+        </div>
+    </div>
+</div>
+
+<div id="dashboard-content">
+    </div>
+
+<div id="loading" class="loading" style="display: none;">
+    <div class="spinner"></div>
+    <div>Оновлення даних...</div>
+</div>
+{% endblock %}
+
+{% block page_scripts %}
+<script>
+function startAutoRefresh() {
+    fetchData();
+    refreshInterval = setInterval(fetchData, 7000); // Оновлювати кожні 7 секунд
+}
+
+const deviceIp = "{{ device_ip }}";
+
+function formatBytes(bytes, decimals = 2) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+function updateUI(data) {
+    // Оновлення статусу в хедері
+    const statusContainer = document.getElementById('device-status-container');
+    if (data.status) {
+        statusContainer.innerHTML = `
+            <span class="status-icon online"><i class="fas fa-circle-check"></i></span>
+            <span>ONLINE</span>`;
+    } else {
+        statusContainer.innerHTML = `
+            <span class="status-icon offline"><i class="fas fa-circle-xmark"></i></span>
+            <span>OFFLINE</span>`;
+        document.getElementById('dashboard-content').innerHTML = `
+        <div class="info-card empty-state">
+            <h2><i class="fas fa-triangle-exclamation"></i> Помилка завантаження даних</h2>
+            <p>Не вдалося отримати дані з пристрою. Перевірте з'єднання або налаштування.</p>
+            <p><small>Помилка: ${data.error || 'Невідома помилка'}</small></p>
+        </div>`;
+        return;
+    }
+
+    document.getElementById('last-updated').textContent = data.timestamp;
+    const dashboardContent = document.getElementById('dashboard-content');
+
+    const memUsed = (data.system.total_memory - data.system.free_memory);
+    const memPercentage = ((memUsed / data.system.total_memory) * 100).toFixed(1);
+
+    // Генерація HTML
+    let html = `
+    <div class="info-card">
+        <h2><i class="fas fa-chart-bar"></i> Системна інформація</h2>
+        <div class="info-grid">
+            <div class="info-item"><div class="info-label">Модель</div><div class="info-value">${data.system.model || 'N/A'}</div></div>
+            <div class="info-item"><div class="info-label">Версія RouterOS</div><div class="info-value">${data.system.version || 'N/A'}</div></div>
+            <div class="info-item"><div class="info-label">Uptime</div><div class="info-value">${data.system.uptime || 'N/A'}</div></div>
+            <div class="info-item"><div class="info-label">CPU Load</div><div class="info-value">${data.system.cpu_load}%</div></div>
+            <div class="info-item"><div class="info-label">RAM Usage</div><div class="info-value">${formatBytes(memUsed)} / ${formatBytes(data.system.total_memory)} (${memPercentage}%)</div></div>
+            <div class="info-item"><div class="info-label">Temperature</div><div class="info-value">${data.system.temperature ? data.system.temperature + '°C' : 'N/A'}</div></div>
+        </div>
+    </div>
+
+    <div class="info-card">
+        <h2><i class="fas fa-ethernet"></i> Інтерфейси (${data.interfaces.length})</h2>
+        <div id="interfaces-list">
+        ${data.interfaces.map(iface => `
+            <div class="interface-row ${iface.running ? 'active-port' : 'inactive-port'}">
+                <div class="interface-name">
+                    <span class="port-index">${iface.type}</span>${iface.name}
+                </div>
+                <div class="interface-details">
+                    <span>${iface.comment || ''}</span>
+                    <span class="speed"><i class="fas fa-network-wired"></i> MAC: ${iface['mac-address']}</span>
+                </div>
+                <div class="interface-status">
+                     <span class="status-tag ${iface.running ? 'status-up' : 'status-down'}">${iface.running ? 'UP' : 'DOWN'}</span>
+                     <span class="status-tag ${iface.disabled === 'false' ? 'status-up' : 'status-down'}">Enabled: ${iface.disabled === 'false' ? 'YES' : 'NO'}</span>
+                </div>
+                <div class="interface-traffic">
+                    <div><i class="fas fa-arrow-down red"></i> RX: ${formatBytes(parseInt(iface['rx-byte']))}</div>
+                    <div><i class="fas fa-arrow-up green"></i> TX: ${formatBytes(parseInt(iface['tx-byte']))}</div>
+                </div>
+            </div>`).join('')}
+        </div>
+    </div>
+
+    <div class="info-card">
+        <h2><i class="fas fa-user-tag"></i> CAPsMAN2 Remote CAP (${data.caps2.length})</h2>
+        ${data.caps2.map(caps => `
+            <div class="interface-row">
+                <div class="interface-name">${caps['identity']}</div>
+                <div class="interface-details"><span>MAC: ${caps['base-mac'] || 'N/A'}</span><span>model: ${caps['board-name'] || 'N/A'}</span></div>
+                <div class="interface-status"><span><i class="fas fa-signal"></i> ${caps['state'] || 'N/A'}</span></div>
+                <div class="interface-traffic">
+                     <div><i class="fa-solid fa-code-fork"></i></i> firmware: ${caps.version || 'N/A'}</div>
+                     <div><i class="fa-regular fa-hourglass"></i> uptime: ${caps['uptime'] || 'N/A'}</div>
+                </div>
+            </div>
+        `).join('')}
+    </div>
+
+<div class="info-card">
+        <h2><i class="fas fa-user-tag"></i> CAPsMAN Remote CAP (${data.caps.length})</h2>
+        ${data.caps.map(caps => `
+            <div class="interface-row">
+                <div class="interface-name">${caps['identity']}</div>
+                <div class="interface-details"><span>MAC: ${caps['base-mac'] || 'N/A'}</span><span>model: ${caps['board'] || 'N/A'}</span></div>
+                <div class="interface-status"><span><i class="fas fa-signal"></i> ${caps['state'] || 'N/A'}</span></div>
+                <div class="interface-traffic">
+                     <div><i class="fa-solid fa-code-fork"></i></i> firmware: ${caps.version || 'N/A'}</div>
+
+                </div>
+            </div>
+        `).join('')}
+    </div>
+    `;
+    dashboardContent.innerHTML = html;
+}
+
+function fetchData() {
+    const loadingIndicator = document.getElementById('loading');
+    loadingIndicator.style.display = 'flex';
+
+    fetch(`/api/ros/${deviceIp}`)
+        .then(response => {
+            if (!response.ok) {
+                return response.json().then(err => { throw new Error(err.error || `HTTP error! status: ${response.status}`) });
+            }
+            return response.json();
+        })
+        .then(data => {
+            updateUI(data);
+        })
+        .catch(error => {
+            console.error('Помилка завантаження даних:', error);
+            updateUI({ status: false, error: error.message });
+        })
+        .finally(() => {
+            loadingIndicator.style.display = 'none';
+        });
+}
+</script>
+{% endblock %}

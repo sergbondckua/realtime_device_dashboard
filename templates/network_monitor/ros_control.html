@@ -1,11 +1,11 @@
 {% extends "network_monitor/base.html" %}
 
-{% block title %}Управління RouterOS - WiFi Provisioning{% endblock %}
+{% block title %}Управління RouterOS - WiFi {{ ssid }}{% endblock %}
 
 {% block content %}
   <div class="header">
     <h1>
-      <i class="fas fa-wifi"></i> Управління RouterOS WiFi Provisioning
+      <i class="fas fa-wifi"></i> Управління RouterOS WiFi {{ ssid }}
     </h1>
     <div class="status-bar">
       <div class="status-item" id="connection-status">
@@ -26,7 +26,7 @@
 
   <!-- Поточний стан provisioning -->
   <div class="info-card">
-    <h2><i class="fas fa-info-circle"></i> Поточний стан WiFi Provisioning</h2>
+    <h2><i class="fas fa-info-circle"></i> Поточний стан WiFi: {{ ssid }}</h2>
 
     <div class="status-display">
       <div class="status-indicator-large" id="provisioning-status">
@@ -38,7 +38,7 @@
                     {{ 'УВІМКНЕНО' if is_enabled else 'ВИМКНЕНО' }}
                 </span>
           <span class="status-description" id="status-description">
-                    {{ 'WiFi Provisioning активний' if is_enabled else 'WiFi Provisioning вимкнений' }}
+                    {{ 'WiFi активний' if is_enabled else 'WiFi вимкнений' }}
                 </span>
         </div>
       </div>
@@ -51,7 +51,7 @@
 
     <div class="control-panel">
       <div class="control-group">
-        <h3>WiFi Provisioning (Dual Band)</h3>
+        <h3>ssid: {{ ssid }} (Dual Band)</h3>
         <p>Керування режимом provisioning для WiFi інтерфейсів RouterOS (2.4GHz + 5GHz) з автоматичним виконанням
           provision-all</p>
 
@@ -61,8 +61,8 @@
               class="control-btn btn-success"
               onclick="toggleProvisioning(true)"
               {{ 'disabled' if is_enabled else '' }}>
-            <i class="fas fa-power-off"></i>
-            Увімкнути Provisioning
+            <i class="fa-solid fa-toggle-on"></i>
+            Увімкнути
           </button>
 
           <button
@@ -70,8 +70,8 @@
               class="control-btn btn-danger"
               onclick="toggleProvisioning(false)"
               {{ 'disabled' if not is_enabled else '' }}>
-            <i class="fas fa-power-off"></i>
-            Вимкнути Provisioning
+            <i class="fa-solid fa-toggle-off"></i>
+            Вимкнути
           </button>
         </div>
       </div>
@@ -106,7 +106,7 @@
           </div>
           <div class="info-item">
             <div class="info-label">Конфігурація</div>
-            <div class="info-value">{{ interface_0_config or 'cfg-2-free-N' }}</div>
+            <div class="info-value">{{ interface_0_config or '' }}</div>
           </div>
         </div>
       </div>
@@ -123,7 +123,7 @@
           </div>
           <div class="info-item">
             <div class="info-label">Конфігурація</div>
-            <div class="info-value">{{ interface_1_config or 'cfg-5-free-AC' }}</div>
+            <div class="info-value">{{ interface_1_config or '' }}</div>
           </div>
         </div>
       </div>
@@ -246,12 +246,12 @@
               statusCircle.className = 'status-circle status-enabled';
               statusIcon.className = 'fas fa-check';
               statusLabel.textContent = 'УВІМКНЕНО';
-              statusDescription.textContent = 'WiFi Provisioning активний';
+              statusDescription.textContent = 'WiFi активний';
           } else {
               statusCircle.className = 'status-circle status-disabled';
               statusIcon.className = 'fas fa-times';
               statusLabel.textContent = 'ВИМКНЕНО';
-              statusDescription.textContent = 'WiFi Provisioning вимкнений';
+              statusDescription.textContent = 'WiFi вимкнений';
           }
 
           updateButtons(isEnabled);

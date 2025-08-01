@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime
+from functools import partial
 from typing import Dict, Any
 
 import ros_api
@@ -10,19 +11,16 @@ from flask_cors import CORS
 from flask import render_template
 
 from config import DEVICES_IP_MAP
-from protocols.api import get_ros
 from protocols.snmp import AsyncSwitchSNMP
 from monitor.devices import start_monitoring, status
 
 app = Flask(__name__)
 CORS(app)
+start_monitoring()
 
 # Прочитайте змінні середовища
 env = Env()
 env.read_env()
-
-start_monitoring()
-router = ros_api.Api(*env.list("ROOT_ROUTER"))
 
 # Налаштування логування
 logging.basicConfig(
@@ -152,8 +150,10 @@ async def device_detail(device_ip: str):
 async def ros_control_page():
     """Сторінка управління RouterOS Provisioning"""
     try:
+        router = ros_api.Api(*env.list("ROOT_ROUTER"))
         # Перевіряємо поточний стан для обох інтерфейсів
-        current_config = router.talk("/interface/wifi/provisioning/print")
+        current_provision = router.talk("/interface/wifi/provisioning/print")
+        curent_config = router.talk("/interface/wifi/configuration/print")
 
         # Визначаємо чи увімкнено provisioning для кожного інтерфейсу
         interface_0_enabled = False
@@ -161,12 +161,19 @@ async def ros_control_page():
         interface_0_config = ""
         interface_1_config = ""
 
-        if current_config:
-            for item in current_config:
-                if item.get("master-configuration") == "cfg-2-staff-N":
+        if current_provision:
+            for item in curent_config:
+                if item.get("name") in [
+                    "cfg-2ghz-N_student",
+                    "cfg-5ghz-AC_student",
+                ]:
+                    ssid = item.get("ssid")
+                    break
+            for item in current_provision:
+                if item.get("master-configuration") == "cfg-2ghz-N_staff":
                     interface_0_config = item.get("slave-configurations", "")
                     interface_0_enabled = bool(interface_0_config)
-                elif item.get("master-configuration") == "cfg-5-staff-AC":
+                elif item.get("master-configuration") == "cfg-5ghz-AC_staff":
                     interface_1_config = item.get("slave-configurations", "")
                     interface_1_enabled = bool(interface_1_config)
 
@@ -176,6 +183,7 @@ async def ros_control_page():
         return render_template(
             "network_monitor/ros_control.html",
             is_enabled=is_enabled,
+            ssid=ssid,
             interface_0_enabled=interface_0_enabled,
             interface_1_enabled=interface_1_enabled,
             interface_0_config=interface_0_config,
@@ -184,10 +192,13 @@ async def ros_control_page():
         )
 
     except Exception as e:
-        logger.error("Помилка при отриманні стану RouterOS: %s", str(e), exc_info=True)
+        logger.error(
+            "Помилка при отриманні стану RouterOS: %s", str(e), exc_info=True
+        )
         return render_template(
             "network_monitor/ros_control.html",
             is_enabled=False,
+            ssid="",
             interface_0_enabled=False,
             interface_1_enabled=False,
             interface_0_config="",
@@ -274,12 +285,13 @@ async def get_devices_stats():
 async def enable_provisioning():
     """API для вмикання WiFi Provisioning"""
     try:
+        router = ros_api.Api(*env.list("ROOT_ROUTER"))
         # Вмикаємо provisioning для обох інтерфейсів
         result1 = router.talk(
-            "/interface/wifi/provisioning/set\n=numbers=0\n=slave-configurations=cfg-2-free-N"
+            "/interface/wifi/provisioning/set\n=numbers=0\n=slave-configurations=cfg-2ghz-N_student"
         )
         result2 = router.talk(
-            "/interface/wifi/provisioning/set\n=numbers=1\n=slave-configurations=cfg-5-free-AC"
+            "/interface/wifi/provisioning/set\n=numbers=1\n=slave-configurations=cfg-5ghz-AC_student"
         )
 
         # Список всіх Remote Cap інтерфейсів
@@ -289,10 +301,10 @@ async def enable_provisioning():
 
         # Виконуємо provision-all для Remote Cap
         for interface in remote_cap_interfaces:
-            id_iface = interface[".id"]
-            router.talk(
-                f"/interface/wifi/capsman/remote-cap/provision\n=.id={id_iface}"
-            )
+            if id_iface := interface.get(".id"):
+                router.talk(
+                    f"/interface/wifi/capsman/remote-cap/provision\n=.id={id_iface}"
+                )
 
         logger.info(
             "WiFi Provisioning увімкнено для обох інтерфейсів та виконано provision-all"
@@ -304,8 +316,8 @@ async def enable_provisioning():
                 "message": "WiFi Provisioning успішно увімкнено для обох інтерфейсів",
                 "status": "enabled",
                 "details": {
-                    "interface_0": "cfg-2-free-N",
-                    "interface_1": "cfg-5-free-AC",
+                    "interface_0": "cfg-2ghz-N_student",
+                    "interface_1": "cfg-5ghz-AC_student",
                     "provision_all": "executed",
                 },
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -331,6 +343,7 @@ async def enable_provisioning():
 async def disable_provisioning():
     """API для вимикання WiFi Provisioning"""
     try:
+        router = ros_api.Api(*env.list("ROOT_ROUTER"))
         # Вимикаємо provisioning для обох інтерфейсів
         result1 = router.talk(
             "/interface/wifi/provisioning/set\n=numbers=0\n=slave-configurations="
@@ -346,10 +359,10 @@ async def disable_provisioning():
 
         # Виконуємо provision-all для Remote Cap
         for interface in remote_cap_interfaces:
-            id_iface = interface[".id"]
-            router.talk(
-                f"/interface/wifi/capsman/remote-cap/provision\n=.id={id_iface}"
-            )
+            if id_iface := interface.get(".id"):
+                router.talk(
+                    f"/interface/wifi/capsman/remote-cap/provision\n=.id={id_iface}"
+                )
 
         logger.info(
             "WiFi Provisioning вимкнено для обох інтерфейсів та виконано provision-all"
@@ -388,6 +401,7 @@ async def disable_provisioning():
 async def get_provisioning_status():
     """API для отримання поточного стану provisioning"""
     try:
+        router = ros_api.Api(*env.list("ROOT_ROUTER"))
         # Отримуємо поточну конфігурацію
         current_config = router.talk("/interface/wifi/provisioning/print")
 
@@ -400,23 +414,12 @@ async def get_provisioning_status():
         if current_config:
             for item in current_config:
                 config_details.append(item)
-                if "numbers" in item:
-                    if (
-                        item["numbers"] == "0"
-                        and "slave-configurations" in item
-                    ):
-                        interface_0_config = item.get(
-                            "slave-configurations", ""
-                        )
-                        interface_0_enabled = bool(interface_0_config)
-                    elif (
-                        item["numbers"] == "1"
-                        and "slave-configurations" in item
-                    ):
-                        interface_1_config = item.get(
-                            "slave-configurations", ""
-                        )
-                        interface_1_enabled = bool(interface_1_config)
+                if item.get("master-configuration") == "cfg-2ghz-N_staff":
+                    interface_0_config = item.get("slave-configurations", "")
+                    interface_0_enabled = bool(interface_0_config)
+                elif item.get("master-configuration") == "cfg-5ghz-AC_staff":
+                    interface_1_config = item.get("slave-configurations", "")
+                    interface_1_enabled = bool(interface_1_config)
 
         # Загальний статус
         is_enabled = interface_0_enabled and interface_1_enabled
@@ -452,6 +455,157 @@ async def get_provisioning_status():
             ),
             500,
         )
+
+
+# Функція для збору API даних з MikroTik
+async def get_mikrotik_data(device_ip: str) -> Dict[str, Any]:
+    """
+    Збирає комплексну інформацію з роутера MikroTik,
+    виконуючи запити послідовно для стабільності.
+    """
+    try:
+        env = Env()
+        env.read_env()
+        _, user, password = env.list("ROOT_ROUTER", [])
+
+        loop = asyncio.get_running_loop()
+        api = await loop.run_in_executor(
+            None, partial(ros_api.Api, device_ip, user=user, password=password)
+        )
+
+        # --- Виконуємо запити послідовно, а не паралельно ---
+        system_resource = await loop.run_in_executor(
+            None, api.talk, "/system/resource/print"
+        )
+        routerboard = await loop.run_in_executor(
+            None, api.talk, "/system/routerboard/print"
+        )
+        health = await loop.run_in_executor(
+            None, api.talk, "/system/health/print"
+        )
+        interfaces = await loop.run_in_executor(
+            None, api.talk, "/interface/print"
+        )
+        dhcp_leases = await loop.run_in_executor(
+            None, api.talk, "/ip/dhcp-server/lease/print"
+        )
+        caps = await loop.run_in_executor(
+            None, api.talk, "/caps-man/remote-cap/print"
+        )
+        caps2 = await loop.run_in_executor(
+            None, api.talk, "/interface/wifi/capsman/remote-cap/print"
+        )
+        # ---------------------------------------------------------
+
+        # Форматуємо дані (ця частина залишається без змін)
+        data = {
+            "status": True,
+            "system": {
+                "uptime": (
+                    system_resource[0].get("uptime")
+                    if system_resource
+                    else None
+                ),
+                "version": (
+                    system_resource[0].get("version")
+                    if system_resource
+                    else None
+                ),
+                "cpu_load": (
+                    system_resource[0].get("cpu-load")
+                    if system_resource
+                    else None
+                ),
+                "total_memory": (
+                    system_resource[0].get("total-memory")
+                    if system_resource
+                    else 0
+                ),
+                "free_memory": (
+                    system_resource[0].get("free-memory")
+                    if system_resource
+                    else 0
+                ),
+                "model": routerboard[0].get("model") if routerboard else None,
+                "temperature": (
+                    next(
+                        (
+                            item.get("value")
+                            for item in health
+                            if item.get("name") == "temperature"
+                        ),
+                        None,
+                    )
+                    if health
+                    else None
+                ),
+            },
+            "interfaces": interfaces,
+            "dhcp_leases": (
+                [
+                    lease
+                    for lease in dhcp_leases
+                    if lease.get("status") == "bound"
+                ]
+                if dhcp_leases
+                else []
+            ),
+            "caps": caps,
+            "caps2": caps2,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        return data
+
+    except Exception as e:
+        # Цей блок також ловитиме помилки, якщо якийсь із запитів не вдасться
+        # Наприклад, якщо /caps-man/ не існує на пристрої
+        logger.error(
+            f"Помилка отримання даних з MikroTik {device_ip}: {e}",
+            exc_info=True,
+        )
+        return {"status": False, "error": str(e)}
+
+
+# Нова сторінка для дашборду MikroTik
+@app.route("/ros/<device_ip>")
+async def mikrotik_dashboard(device_ip: str):
+    """Сторінка моніторингу для конкретного роутера MikroTik."""
+    device_data = await get_mikrotik_data(device_ip)
+
+    device_name = next(
+        (
+            d.get("name", device_ip)
+            for d in DEVICES_IP_MAP
+            if d.get("ip") == device_ip
+        ),
+        device_ip,
+    )
+
+    return render_template(
+        "network_monitor/mikrotik_dashboard.html",
+        device_ip=device_ip,
+        device_name=device_name,
+        data=device_data,
+    )
+
+
+# Новий API endpoint для AJAX оновлень
+@app.route("/api/ros/<device_ip>")
+async def api_mikrotik_data(device_ip: str):
+    """API для отримання даних з MikroTik у форматі JSON."""
+    data = await get_mikrotik_data(device_ip)
+    if not data.get("status"):
+        return (
+            jsonify(
+                {
+                    "error": data.get(
+                        "error", "Не вдалося підключитися до пристрою"
+                    )
+                }
+            ),
+            500,
+        )
+    return jsonify(data)
 
 
 @app.errorhandler(404)

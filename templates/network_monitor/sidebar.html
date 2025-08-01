@@ -1,23 +1,24 @@
 <aside class="sidebar">
-        <div class="sidebar-header">
-            <h1 class="logo"><i class="fas fa-shield-halved"></i> NetWatch</h1>
-        </div>
-        <nav class="main-nav">
-            <a href="/" class="nav-item {% if request.path == '/' %}active{% endif %}">
-                <i class="fas fa-home-lg"></i>
-                <span class="nav-text">Дашборд</span>
-            </a>
-            <a href="#" class="nav-item">
-                <i class="fas fa-chart-line"></i>
-                <span class="nav-text">Аналітика</span>
-            </a>
-            <a href="#" class="nav-item">
-                <i class="fas fa-wrench"></i>
-                <span class="nav-text">Налаштування</span>
-            </a>
-            <a href="#" class="nav-item">
-                <i class="fas fa-book"></i>
-                <span class="nav-text">Журнали</span>
-            </a>
-        </nav>
-    </aside>
+  <div class="sidebar-header">
+    <h1 class="logo"><i class="fas fa-shield-halved"></i> NetWatch</h1>
+  </div>
+  <nav class="main-nav">
+    <a href="/" class="nav-item {% if request.path == '/' %}active{% endif %}">
+      <i class="fas fa-home-lg"></i>
+      <span class="nav-text">Дашборд</span>
+    </a>
+    <a class="nav-item {% if 'mikrotik' in request.path %}active{% endif %}"
+       href="{{ url_for('mikrotik_dashboard', device_ip='192.162.109.100') }}">
+      <i class="fa-solid fa-microchip"></i>
+      <span class="nav-text">MikroTik</span>
+    </a>
+    <a href="#" class="nav-item">
+      <i class="fas fa-wrench"></i>
+      <span class="nav-text">Налаштування</span>
+    </a>
+    <a href="#" class="nav-item">
+      <i class="fas fa-book"></i>
+      <span class="nav-text">Журнали</span>
+    </a>
+  </nav>
+</aside>
